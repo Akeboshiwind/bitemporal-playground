@@ -105,3 +105,4 @@ The `dist` branch can be deployed to any static hosting (GitHub Pages, Netlify, 
 Reference documentation for libraries and patterns used in this project:
 
 - [dev/REAGAMI.md](dev/REAGAMI.md) - Reagami API reference and lifecycle hooks
+- [dev/SQUINT.md](dev/SQUINT.md) - Squint differences from ClojureScript
