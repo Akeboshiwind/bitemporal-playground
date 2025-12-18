@@ -1,0 +1,8 @@
+target/
+*.pem
+node_modules/
+.clj-kondo/.cache/v1
+.lsp/.cache
+build
+.clj-kondo/imports
+.nrepl-port

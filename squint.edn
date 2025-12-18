@@ -1,0 +1,4 @@
+{:paths ["src/app"]
+ :extension "js"
+ :output-dir "build/app"
+ :copy-resources #{:css :html}}

@@ -1,0 +1,14 @@
+{:tasks
+ {dev:squint (shell "bun squint watch --repl true")
+  dev:bun (shell "bun run build.js --watch")
+  dev:serve (shell "bunx serve target/public -l 3000")
+  -dev {:depends [dev:squint dev:bun dev:serve]}
+  dev {:depends [build]
+       :task (run '-dev {:parallel true})}
+
+  build:squint (shell "bun squint compile")
+  build:bun (shell "bun run build.js")
+  build {:depends [build:squint build:bun]}
+
+  serve (shell "bunx serve target/public -l 3000")
+  clean (shell "rm -rf target build")}}

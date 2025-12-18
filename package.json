@@ -1,0 +1,14 @@
+{
+  "name": "squint-webapp-starter",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "ably": "^2.15.0",
+    "bun-plugin-tailwind": "^0.1.2",
+    "reagami": "^0.0.36",
+    "squint-cljs": "^0.8.134"
+  },
+  "devDependencies": {
+    "tailwindcss": "^4.1.17"
+  }
+}
