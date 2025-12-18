@@ -76,7 +76,7 @@
 
 ;; >> Canvas Management
 
-(def PADDING 50)        ;; Must match canvas.cljs config
+(def PADDING 60)        ;; Must match canvas.cljs config
 (def HANDLE_WIDTH 8)    ;; Must match canvas.cljs config
 (def MIN_DURATION 0.05) ;; Minimum event duration in normalized units
 

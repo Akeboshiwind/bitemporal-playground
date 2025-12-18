@@ -3,7 +3,7 @@
 ;; >> Configuration
 
 (def config
-  {:padding 50
+  {:padding 60
    :grid-divisions 10
    :grid-color "#e5e7eb"
    :foreground-grid-color "rgba(0, 0, 0, 0.3)"
