@@ -130,11 +130,32 @@
             event (nth events index)
             {:keys [_valid_from _valid_to _system_from]} event]
         (if on-handle
-          (swap! drag-state assoc
-                 :dragging index
-                 :mode :resize
-                 :offset-x (- _valid_to x)
-                 :offset-y 0)
+          ;; Check if resizing a selected event - if so, resize all selected
+          (if (and (contains? currently-selected index) (> (count currently-selected) 1))
+            ;; Multi-resize: store original positions for all selected events
+            (let [selected-events (map #(nth events %) currently-selected)
+                  min-valid-from (apply min (map :_valid_from selected-events))
+                  max-valid-to (apply max (map :_valid_to selected-events))
+                  original-span (- max-valid-to min-valid-from)
+                  original-positions (into {}
+                                       (map (fn [idx]
+                                              (let [evt (nth events idx)]
+                                                [idx {:_valid_from (:_valid_from evt)
+                                                      :_valid_to (:_valid_to evt)}]))
+                                            currently-selected))]
+              (swap! drag-state assoc
+                     :dragging index
+                     :mode :resize-multi
+                     :offset-x (- _valid_to x)
+                     :anchor-point min-valid-from
+                     :original-span original-span
+                     :original-positions original-positions))
+            ;; Single resize
+            (swap! drag-state assoc
+                   :dragging index
+                   :mode :resize
+                   :offset-x (- _valid_to x)
+                   :offset-y 0))
           ;; Check if clicking on a selected event - if so, drag all selected
           (if (and (contains? currently-selected index) (> (count currently-selected) 1))
             ;; Multi-drag: store offsets for all selected events
@@ -193,7 +214,7 @@
 
       dragging
       (set! (.-cursor (.-style canvas-el))
-            (if (= mode :resize) "ew-resize" "move"))
+            (if (or (= mode :resize) (= mode :resize-multi)) "ew-resize" "move"))
 
       :else
       (let [hit (hit-test canvas-el (:events @state) x y)]
@@ -213,7 +234,7 @@
                :selected selected)
         (render-canvas! canvas-el))
 
-      ;; Resize mode
+      ;; Single resize mode
       (and dragging (= mode :resize))
       (let [events (:events @state)
             event (nth events dragging)
@@ -222,6 +243,37 @@
             new-valid-to (max min-valid-to (min 1 new-valid-to))
             updated-event (assoc event :_valid_to new-valid-to)
             updated-events (assoc (vec events) dragging updated-event)]
+        (swap! state assoc :events updated-events)
+        (render-canvas! canvas-el))
+
+      ;; Multi-resize mode - scale all selected events proportionally
+      (and dragging (= mode :resize-multi))
+      (let [{:keys [anchor-point original-span original-positions]} @drag-state
+            events (vec (:events @state))
+            ;; Calculate new max valid-to based on drag
+            new-max-valid-to (+ x offset-x)
+            new-max-valid-to (max (+ anchor-point MIN_DURATION) (min 1 new-max-valid-to))
+            ;; Calculate scale factor
+            new-span (- new-max-valid-to anchor-point)
+            scale (/ new-span original-span)
+            ;; Apply scale to all selected events
+            updated-events (reduce
+                            (fn [evts idx]
+                              (let [event (nth evts idx)
+                                    orig-pos (get original-positions idx)
+                                    orig-from (:_valid_from orig-pos)
+                                    orig-to (:_valid_to orig-pos)
+                                    ;; Scale positions relative to anchor point
+                                    new-from (+ anchor-point (* (- orig-from anchor-point) scale))
+                                    new-to (+ anchor-point (* (- orig-to anchor-point) scale))
+                                    ;; Ensure minimum duration
+                                    new-to (max (+ new-from MIN_DURATION) new-to)
+                                    updated-event (assoc event
+                                                         :_valid_from new-from
+                                                         :_valid_to (min 1 new-to))]
+                                (assoc evts idx updated-event)))
+                            events
+                            (keys original-positions))]
         (swap! state assoc :events updated-events)
         (render-canvas! canvas-el))
 
