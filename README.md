@@ -99,3 +99,9 @@ The `ably.cljs` module provides:
 On push to `main`, GitHub Actions builds and pushes static assets to the `dist` branch.
 
 The `dist` branch can be deployed to any static hosting (GitHub Pages, Netlify, Vercel, etc.).
+
+## Dev Resources
+
+Reference documentation for libraries and patterns used in this project:
+
+- [dev/REAGAMI.md](dev/REAGAMI.md) - Reagami API reference and lifecycle hooks
