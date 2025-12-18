@@ -1,6 +1,24 @@
-# Squint Webapp Starter
+# Bitemporal Visualizer
 
-A minimal starter for building static frontend webapps with Squint (ClojureScript), Bun, Tailwind CSS, Reagami, and Ably real-time.
+An interactive visualizer for bitemporal data, built with Squint (ClojureScript), Bun, Tailwind CSS, and Reagami.
+
+## What is Bitemporal Data?
+
+Bitemporal data tracks two time dimensions:
+- **Valid Time** (x-axis): When the data is true in the real world
+- **System Time** (y-axis): When the data was recorded in the system
+
+This visualizer renders bitemporal events as colored rectangles that extend from their system time upward (representing that the record is valid from that system time until now/infinity).
+
+## Features
+
+- **Interactive Canvas**: Drag events to reposition them in valid time and system time
+- **Resize Events**: Drag the right edge handle to change event duration
+- **Multi-Select**: Click and drag on empty space to select multiple events
+- **Batch Operations**: Move or resize multiple selected events together (proportional scaling)
+- **Grid Overlay**: Toggle grid lines on top of events for alignment
+- **Persistence**: Events and settings saved to localStorage
+- **Real-time Presence**: Shows number of users currently viewing (via Ably)
 
 ## Stack
 
@@ -11,20 +29,20 @@ A minimal starter for building static frontend webapps with Squint (ClojureScrip
 - **Ably** - Real-time messaging and presence
 - **Babashka** - Task runner
 
-## Features
-
-- Real-time presence counter (shows number of users online)
-- Connection status indicator (shows when connecting/disconnected)
-
 ## Project Structure
 
 ```
 ├── src/
-│   ├── app/              # ClojureScript source files
-│   │   ├── app.cljs      # App entry point with presence UI
+│   ├── app/
+│   │   ├── app.cljs      # Main app: state, event handlers, UI components
+│   │   ├── canvas.cljs   # Canvas rendering: grid, axes, events, selection
 │   │   ├── ably.cljs     # Ably wrapper (presence, pub/sub)
 │   │   └── entry.css     # Tailwind CSS entry point
 │   └── index.html        # HTML entry point
+├── dev/                  # Developer reference notes
+│   ├── REAGAMI.md        # Reagami API reference
+│   └── SQUINT.md         # Squint differences from ClojureScript
+├── llm-tasks/            # Task documents for LLM continuity
 ├── build/                # Squint compilation output (gitignored)
 ├── target/public/        # Final bundled output (gitignored)
 ├── bb.edn                # Babashka task definitions
@@ -85,20 +103,14 @@ Clean build artifacts:
 bb clean
 ```
 
-## Ably Integration
+## Usage
 
-The `ably.cljs` module provides:
-
-- **Connection management** - `init!`, `connected?`, `connection-status`
-- **Presence** - `enter-presence!`, `update-presence!`, `on-presence-change!`, `get-presence-members`
-- **Pub/Sub** - `publish!`, `subscribe!`
-- **Stable client ID** - Persisted in localStorage for consistent identity
-
-## Deployment
-
-On push to `main`, GitHub Actions builds and pushes static assets to the `dist` branch.
-
-The `dist` branch can be deployed to any static hosting (GitHub Pages, Netlify, Vercel, etc.).
+- **Move event**: Click and drag an event
+- **Resize event**: Drag the grey handle on the right edge
+- **Select multiple**: Click and drag on empty space to draw selection box
+- **Move selected**: Drag any selected event to move all together
+- **Resize selected**: Drag any selected event's handle to scale all proportionally
+- **Toggle grid**: Check "Grid" in the sidebar to show overlay grid
 
 ## Dev Resources
 
@@ -106,3 +118,9 @@ Reference documentation for libraries and patterns used in this project:
 
 - [dev/REAGAMI.md](dev/REAGAMI.md) - Reagami API reference and lifecycle hooks
 - [dev/SQUINT.md](dev/SQUINT.md) - Squint differences from ClojureScript
+
+## Deployment
+
+On push to `main`, GitHub Actions builds and pushes static assets to the `dist` branch.
+
+The `dist` branch can be deployed to any static hosting (GitHub Pages, Netlify, Vercel, etc.).
