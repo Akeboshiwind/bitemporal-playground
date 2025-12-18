@@ -63,6 +63,15 @@
                        :select-end nil     ; {x, y} end of selection box
                        :selected #{}}))    ; set of selected event indices
 
+;; Context menu state
+(def context-menu (atom {:open false
+                         :x 0              ; screen x position
+                         :y 0              ; screen y position
+                         :target-indices #{}})) ; event indices to modify
+
+(defn close-context-menu! []
+  (reset! context-menu {:open false :x 0 :y 0 :target-indices #{}}))
+
 ;; >> Canvas Management
 
 (def PADDING 50)        ;; Must match canvas.cljs config
@@ -121,6 +130,9 @@
                  sorted-indices))))
 
 (defn on-mouse-down [canvas-el e]
+  ;; Close context menu on any click
+  (when (:open @context-menu)
+    (close-context-menu!))
   (let [{:keys [x y]} (canvas->normalized canvas-el (.-clientX e) (.-clientY e))
         events (:events @state)
         hit (hit-test canvas-el events x y)
@@ -329,21 +341,41 @@
                         :selected selected})
     (render-canvas! canvas-el)))
 
+(defn on-context-menu [canvas-el e]
+  (.preventDefault e)
+  (let [{:keys [x y]} (canvas->normalized canvas-el (.-clientX e) (.-clientY e))
+        events (:events @state)
+        hit (hit-test canvas-el events x y)
+        currently-selected (:selected @drag-state)]
+    (when hit
+      (let [clicked-idx (:index hit)
+            ;; If clicked event is in selection, target all selected; otherwise just the clicked one
+            target-indices (if (contains? currently-selected clicked-idx)
+                             currently-selected
+                             #{clicked-idx})]
+        (reset! context-menu {:open true
+                              :x (.-clientX e)
+                              :y (.-clientY e)
+                              :target-indices target-indices})))))
+
 (defn canvas-lifecycle [node lifecycle _data]
   (case lifecycle
     "mount" (let [resize-handler #(render-canvas! node)
                   mousedown-handler #(on-mouse-down node %)
                   mousemove-handler #(on-mouse-move node %)
-                  mouseup-handler #(on-mouse-up node %)]
+                  mouseup-handler #(on-mouse-up node %)
+                  contextmenu-handler #(on-context-menu node %)]
               (.addEventListener js/window "resize" resize-handler)
               (.addEventListener node "mousedown" mousedown-handler)
               (.addEventListener js/window "mousemove" mousemove-handler)
               (.addEventListener js/window "mouseup" mouseup-handler)
+              (.addEventListener node "contextmenu" contextmenu-handler)
               (render-canvas! node)
               {:resize resize-handler
                :mousedown mousedown-handler
                :mousemove mousemove-handler
-               :mouseup mouseup-handler})
+               :mouseup mouseup-handler
+               :contextmenu contextmenu-handler})
     "update" (render-canvas! node)
     "unmount" nil
     nil))
@@ -374,6 +406,59 @@
 (defn toggle-grid! []
   (swap! state update :show-grid not))
 
+;; >> Context Menu
+
+(def preset-colors
+  [[59 130 246]    ; blue
+   [34 197 94]     ; green
+   [249 115 22]    ; orange
+   [168 85 247]    ; purple
+   [236 72 153]])  ; pink
+
+(defn rgb->css [[r g b]]
+  (str "rgb(" r "," g "," b ")"))
+
+(defn rgb->hex [[r g b]]
+  (str "#"
+       (.padStart (.toString r 16) 2 "0")
+       (.padStart (.toString g 16) 2 "0")
+       (.padStart (.toString b 16) 2 "0")))
+
+(defn hex->rgb [hex]
+  (let [hex (if (= (first hex) "#") (subs hex 1) hex)
+        r (js/parseInt (subs hex 0 2) 16)
+        g (js/parseInt (subs hex 2 4) 16)
+        b (js/parseInt (subs hex 4 6) 16)]
+    [r g b]))
+
+(defn set-event-colors! [indices color]
+  (let [events (vec (:events @state))
+        updated-events (reduce
+                        (fn [evts idx]
+                          (update evts idx assoc :color color))
+                        events
+                        indices)]
+    (swap! state assoc :events updated-events))
+  (close-context-menu!))
+
+(defn color-menu []
+  (let [{:keys [open x y target-indices]} @context-menu]
+    (when open
+      [:div {:class "fixed bg-white rounded-lg shadow-xl border border-gray-200 p-2 z-50"
+             :style {:left (str x "px")
+                     :top (str y "px")}}
+       [:div {:class "flex gap-1 items-center"}
+        ;; Preset color swatches
+        (for [color preset-colors]
+          [:button {:key (rgb->css color)
+                    :class "w-6 h-6 rounded border border-gray-300 hover:scale-110 transition-transform cursor-pointer"
+                    :style {:background-color (rgb->css color)}
+                    :on-click #(set-event-colors! target-indices color)}])
+        ;; Color picker
+        [:input {:type "color"
+                 :class "w-6 h-6 rounded cursor-pointer border-0 p-0"
+                 :on-change #(set-event-colors! target-indices (hex->rgb (.-value (.-target %))))}]]])))
+
 (defn side-panel []
   [:div {:class "w-64 bg-gray-800 text-white p-4 flex flex-col"}
    [:h1 {:class "text-xl font-bold mb-6"} "Bitemporal Visualizer"]
@@ -395,7 +480,8 @@
    [side-panel]
    [main-canvas]
    [presence-indicator]
-   [connection-pill]])
+   [connection-pill]
+   [color-menu]])
 
 ;; >> Render
 
@@ -404,6 +490,7 @@
 
 (add-watch state ::render (fn [_ _ _ _] (render)))
 (add-watch ably/state ::render-ably (fn [_ _ _ _] (render)))
+(add-watch context-menu ::render-context-menu (fn [_ _ _ _] (render)))
 
 ;; >> Presence
 
