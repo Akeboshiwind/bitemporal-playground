@@ -92,14 +92,16 @@
 (defn sort-events-by-system-time [events]
   (sort-by :_system_from events))
 
-(defn draw-event! [ctx event width height padding cell-size]
+(defn draw-event! [ctx event width height padding]
   (let [{:keys [_valid_from _valid_to _system_from color]} event
-        ;; Map valid time to x coordinates using cell-size as the unit
-        x1 (+ padding (* _valid_from cell-size))
-        x2 (+ padding (* _valid_to cell-size))
-        ;; Map system time to y coordinate (bottom to top)
+        draw-width (- width (* 2 padding))
+        draw-height (- height (* 2 padding))
+        ;; Map 0..1 valid time to x coordinates
+        x1 (+ padding (* _valid_from draw-width))
+        x2 (+ padding (* _valid_to draw-width))
+        ;; Map 0..1 system time to y coordinate (bottom to top)
         ;; _system_to is infinity, so rect extends from _system_from to top
-        y-bottom (- height padding (* _system_from cell-size))
+        y-bottom (- height padding (* _system_from draw-height))
         y-top padding
         rect-height (- y-bottom y-top)]
     (set! (.-fillStyle ctx) (rgb->css color))
@@ -108,10 +110,10 @@
     (.fillRect ctx x1 y-top (- x2 x1) rect-height)
     (.strokeRect ctx x1 y-top (- x2 x1) rect-height)))
 
-(defn draw-events! [ctx events width height padding cell-size]
+(defn draw-events! [ctx events width height padding]
   (let [sorted-events (sort-events-by-system-time events)]
     (doseq [event sorted-events]
-      (draw-event! ctx event width height padding cell-size))))
+      (draw-event! ctx event width height padding))))
 
 ;; >> Main Render Function
 
@@ -127,7 +129,7 @@
       (draw-grid! ctx width height padding cell-size)
       (draw-axes! ctx width height padding)
       (draw-axis-labels! ctx width height padding)
-      ;; Pass 2: Events
-      (draw-events! ctx events width height padding cell-size)
+      ;; Pass 2: Events (use 0..1 normalized coordinates)
+      (draw-events! ctx events width height padding)
       ;; Pass 3: Foreground (placeholder for future overlays)
       )))

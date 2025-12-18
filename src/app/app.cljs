@@ -12,11 +12,11 @@
 ;; >> Sample Bitemporal Events
 
 (def sample-events
-  [{:_valid_from 1 :_valid_to 4 :_system_from 1 :color [59 130 246]}   ; blue
-   {:_valid_from 2 :_valid_to 6 :_system_from 2 :color [34 197 94]}    ; green
-   {:_valid_from 3 :_valid_to 7 :_system_from 3 :color [249 115 22]}   ; orange
-   {:_valid_from 1 :_valid_to 5 :_system_from 4 :color [168 85 247]}   ; purple
-   {:_valid_from 5 :_valid_to 9 :_system_from 5 :color [236 72 153]}]) ; pink
+  [{:_valid_from 0.1 :_valid_to 0.4 :_system_from 0.1 :color [59 130 246]}   ; blue
+   {:_valid_from 0.2 :_valid_to 0.6 :_system_from 0.2 :color [34 197 94]}    ; green
+   {:_valid_from 0.3 :_valid_to 0.7 :_system_from 0.3 :color [249 115 22]}   ; orange
+   {:_valid_from 0.1 :_valid_to 0.5 :_system_from 0.4 :color [168 85 247]}   ; purple
+   {:_valid_from 0.5 :_valid_to 0.9 :_system_from 0.5 :color [236 72 153]}]) ; pink
 
 ;; >> State
 
