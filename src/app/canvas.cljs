@@ -102,13 +102,19 @@
         ;; Map 0..1 system time to y coordinate (bottom to top)
         ;; _system_to is infinity, so rect extends from _system_from to top
         y-bottom (- height padding (* _system_from draw-height))
-        y-top padding
-        rect-height (- y-bottom y-top)]
+        y-top padding]
+    ;; Fill the rectangle
     (set! (.-fillStyle ctx) (rgb->css color))
+    (.fillRect ctx x1 y-top (- x2 x1) (- y-bottom y-top))
+    ;; Stroke only left, bottom, right sides (no top line - goes to infinity)
     (set! (.-strokeStyle ctx) "#000000")
     (set! (.-lineWidth ctx) 1)
-    (.fillRect ctx x1 y-top (- x2 x1) rect-height)
-    (.strokeRect ctx x1 y-top (- x2 x1) rect-height)))
+    (.beginPath ctx)
+    (.moveTo ctx x1 y-top)
+    (.lineTo ctx x1 y-bottom)
+    (.lineTo ctx x2 y-bottom)
+    (.lineTo ctx x2 y-top)
+    (.stroke ctx)))
 
 (defn draw-events! [ctx events width height padding]
   (let [sorted-events (sort-events-by-system-time events)]
