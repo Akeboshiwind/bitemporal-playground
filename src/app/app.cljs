@@ -8,22 +8,50 @@
 
 (def ABLY_API_KEY "Vr1zhQ.IsKO2g:nY_BkeBtmxQxs0W_MYZNkx-34cZBzzNLOrrAARrygfQ")
 (def CHANNEL_NAME "presence-demo")
+(def STORAGE_KEY "bitemporal-visualizer")
 
 ;; >> Sample Bitemporal Events
 
-(def sample-events
+(def default-events
   [{:_valid_from 0.1 :_valid_to 0.4 :_system_from 0.1 :color [59 130 246]}   ; blue
    {:_valid_from 0.2 :_valid_to 0.6 :_system_from 0.2 :color [34 197 94]}    ; green
    {:_valid_from 0.3 :_valid_to 0.7 :_system_from 0.3 :color [249 115 22]}   ; orange
    {:_valid_from 0.1 :_valid_to 0.5 :_system_from 0.4 :color [168 85 247]}   ; purple
    {:_valid_from 0.5 :_valid_to 0.9 :_system_from 0.5 :color [236 72 153]}]) ; pink
 
+(def default-settings
+  {:show-grid false})
+
+;; >> LocalStorage
+
+(defn save-to-storage! [data]
+  (js/localStorage.setItem STORAGE_KEY (js/JSON.stringify data)))
+
+(defn load-from-storage []
+  (when-let [stored (js/localStorage.getItem STORAGE_KEY)]
+    (js/JSON.parse stored)))
+
+(defn get-persisted-state []
+  (let [stored (load-from-storage)]
+    {:events (or (:events stored) default-events)
+     :show-grid (get stored :show-grid (:show-grid default-settings))}))
+
 ;; >> State
 
+(def initial-persisted (get-persisted-state))
+
 (def state (atom {:presence-count 0
-                  :events sample-events
+                  :events (:events initial-persisted)
                   :canvas-ref nil
-                  :show-grid false}))
+                  :show-grid (:show-grid initial-persisted)}))
+
+;; Save to localStorage when events or settings change
+(add-watch state ::persist
+           (fn [_ _ old-state new-state]
+             (when (or (not= (:events old-state) (:events new-state))
+                       (not= (:show-grid old-state) (:show-grid new-state)))
+               (save-to-storage! {:events (:events new-state)
+                                  :show-grid (:show-grid new-state)}))))
 
 ;; Drag state (separate atom to avoid re-renders during drag)
 (def drag-state (atom {:dragging nil      ; index of event being dragged
