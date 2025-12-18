@@ -198,13 +198,13 @@
                          :dragging index
                          :mode :move-multi
                          :multi-offsets offsets))
-                ;; Single drag
+                ;; Single drag - also select the clicked event
                 (swap! drag-state assoc
                        :dragging index
                        :mode :move
                        :offset-x (- x _valid_from)
                        :offset-y (- _system_from y)
-                       :selected #{}))))
+                       :selected #{index}))))
           ;; Clicked on empty space - start selection
           (reset! drag-state {:dragging nil
                               :mode :select
