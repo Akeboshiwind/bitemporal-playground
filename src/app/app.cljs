@@ -43,7 +43,9 @@
 (def state (atom {:presence-count 0
                   :events (:events initial-persisted)
                   :canvas-ref nil
-                  :show-grid (:show-grid initial-persisted)}))
+                  :show-grid (:show-grid initial-persisted)
+                  :current-tool :select      ; :select or :rectangle
+                  :auto-select true}))       ; switch to select after drawing
 
 ;; Save to localStorage when events or settings change
 (add-watch state ::persist
@@ -89,7 +91,7 @@
       (canvas/render-canvas! canvas-el
                              (:events @state)
                              {:show-grid (:show-grid @state)
-                              :selection-box (when (= mode :select)
+                              :selection-box (when (or (= mode :select) (= mode :draw))
                                                {:start select-start :end select-end})
                               :selected selected}))))
 
@@ -139,67 +141,78 @@
     (close-context-menu!))
   (let [{:keys [x y]} (canvas->normalized canvas-el (.-clientX e) (.-clientY e))
         events (:events @state)
-        hit (hit-test canvas-el events x y)
-        currently-selected (:selected @drag-state)]
-    (if hit
-      (let [{:keys [index on-handle]} hit
-            event (nth events index)
-            {:keys [_valid_from _valid_to _system_from]} event]
-        (if on-handle
-          ;; Check if resizing a selected event - if so, resize all selected
-          (if (and (contains? currently-selected index) (> (count currently-selected) 1))
-            ;; Multi-resize: store original positions for all selected events
-            (let [selected-events (map #(nth events %) currently-selected)
-                  min-valid-from (apply min (map :_valid_from selected-events))
-                  max-valid-to (apply max (map :_valid_to selected-events))
-                  original-span (- max-valid-to min-valid-from)
-                  original-positions (into {}
-                                       (map (fn [idx]
-                                              (let [evt (nth events idx)]
-                                                [idx {:_valid_from (:_valid_from evt)
-                                                      :_valid_to (:_valid_to evt)}]))
-                                            currently-selected))]
-              (swap! drag-state assoc
-                     :dragging index
-                     :mode :resize-multi
-                     :offset-x (- _valid_to x)
-                     :anchor-point min-valid-from
-                     :original-span original-span
-                     :original-positions original-positions))
-            ;; Single resize
-            (swap! drag-state assoc
-                   :dragging index
-                   :mode :resize
-                   :offset-x (- _valid_to x)
-                   :offset-y 0))
-          ;; Check if clicking on a selected event - if so, drag all selected
-          (if (and (contains? currently-selected index) (> (count currently-selected) 1))
-            ;; Multi-drag: store offsets for all selected events
-            (let [offsets (into {}
-                            (map (fn [idx]
-                                   (let [evt (nth events idx)]
-                                     [idx {:offset-x (- x (:_valid_from evt))
-                                           :offset-y (- (:_system_from evt) y)}]))
-                                 currently-selected))]
-              (swap! drag-state assoc
-                     :dragging index
-                     :mode :move-multi
-                     :multi-offsets offsets))
-            ;; Single drag
-            (swap! drag-state assoc
-                   :dragging index
-                   :mode :move
-                   :offset-x (- x _valid_from)
-                   :offset-y (- _system_from y)
-                   :selected #{}))))
-      ;; Clicked on empty space - start selection
+        currently-selected (:selected @drag-state)
+        current-tool (:current-tool @state)]
+    ;; Rectangle tool always draws, regardless of what's underneath
+    (if (= current-tool :rectangle)
       (reset! drag-state {:dragging nil
-                          :mode :select
+                          :mode :draw
                           :offset-x 0
                           :offset-y 0
                           :select-start {:x x :y y}
                           :select-end {:x x :y y}
-                          :selected #{}}))))
+                          :selected #{}})
+      ;; Select tool - check for hits
+      (let [hit (hit-test canvas-el events x y)]
+        (if hit
+          (let [{:keys [index on-handle]} hit
+                event (nth events index)
+                {:keys [_valid_from _valid_to _system_from]} event]
+            (if on-handle
+              ;; Check if resizing a selected event - if so, resize all selected
+              (if (and (contains? currently-selected index) (> (count currently-selected) 1))
+                ;; Multi-resize: store original positions for all selected events
+                (let [selected-events (map #(nth events %) currently-selected)
+                      min-valid-from (apply min (map :_valid_from selected-events))
+                      max-valid-to (apply max (map :_valid_to selected-events))
+                      original-span (- max-valid-to min-valid-from)
+                      original-positions (into {}
+                                           (map (fn [idx]
+                                                  (let [evt (nth events idx)]
+                                                    [idx {:_valid_from (:_valid_from evt)
+                                                          :_valid_to (:_valid_to evt)}]))
+                                                currently-selected))]
+                  (swap! drag-state assoc
+                         :dragging index
+                         :mode :resize-multi
+                         :offset-x (- _valid_to x)
+                         :anchor-point min-valid-from
+                         :original-span original-span
+                         :original-positions original-positions))
+                ;; Single resize
+                (swap! drag-state assoc
+                       :dragging index
+                       :mode :resize
+                       :offset-x (- _valid_to x)
+                       :offset-y 0))
+              ;; Check if clicking on a selected event - if so, drag all selected
+              (if (and (contains? currently-selected index) (> (count currently-selected) 1))
+                ;; Multi-drag: store offsets for all selected events
+                (let [offsets (into {}
+                                (map (fn [idx]
+                                       (let [evt (nth events idx)]
+                                         [idx {:offset-x (- x (:_valid_from evt))
+                                               :offset-y (- (:_system_from evt) y)}]))
+                                     currently-selected))]
+                  (swap! drag-state assoc
+                         :dragging index
+                         :mode :move-multi
+                         :multi-offsets offsets))
+                ;; Single drag
+                (swap! drag-state assoc
+                       :dragging index
+                       :mode :move
+                       :offset-x (- x _valid_from)
+                       :offset-y (- _system_from y)
+                       :selected #{}))))
+          ;; Clicked on empty space - start selection
+          (reset! drag-state {:dragging nil
+                              :mode :select
+                              :offset-x 0
+                              :offset-y 0
+                              :select-start {:x x :y y}
+                              :select-end {:x x :y y}
+                              :selected #{}}))))))
 
 (defn events-in-selection [events select-start select-end]
   "Find indices of events that intersect with the selection box"
@@ -225,23 +238,34 @@
   (let [{:keys [x y]} (canvas->normalized canvas-el (.-clientX e) (.-clientY e))
         {:keys [dragging mode offset-x offset-y select-start multi-offsets selected]} @drag-state]
     ;; Update cursor based on mode and what we're hovering over
-    (cond
-      (= mode :select)
-      (set! (.-cursor (.-style canvas-el)) "crosshair")
+    (let [current-tool (:current-tool @state)]
+      (cond
+        ;; Rectangle tool always shows crosshair
+        (= current-tool :rectangle)
+        (set! (.-cursor (.-style canvas-el)) "crosshair")
 
-      dragging
-      (set! (.-cursor (.-style canvas-el))
-            (if (or (= mode :resize) (= mode :resize-multi)) "ew-resize" "move"))
+        (= mode :select)
+        (set! (.-cursor (.-style canvas-el)) "crosshair")
 
-      :else
-      (let [hit (hit-test canvas-el (:events @state) x y)]
+        dragging
         (set! (.-cursor (.-style canvas-el))
-              (cond
-                (and hit (:on-handle hit)) "ew-resize"
-                hit "move"
-                :else "crosshair"))))
+              (if (or (= mode :resize) (= mode :resize-multi)) "ew-resize" "move"))
+
+        :else
+        (let [hit (hit-test canvas-el (:events @state) x y)]
+          (set! (.-cursor (.-style canvas-el))
+                (cond
+                  (and hit (:on-handle hit)) "ew-resize"
+                  hit "move"
+                  :else "crosshair")))))
     ;; Handle different modes
     (cond
+      ;; Draw mode (rectangle tool)
+      (= mode :draw)
+      (do
+        (swap! drag-state assoc :select-end {:x x :y y})
+        (render-canvas! canvas-el))
+
       ;; Selection mode
       (= mode :select)
       (let [events (:events @state)
@@ -343,8 +367,35 @@
         (swap! state assoc :events updated-events)
         (render-canvas! canvas-el)))))
 
+(def default-new-event-color [100 116 139]) ; slate-500
+
+(defn create-event-from-drag! [select-start select-end]
+  (let [min-x (min (:x select-start) (:x select-end))
+        max-x (max (:x select-start) (:x select-end))
+        min-y (min (:y select-start) (:y select-end))
+        ;; Ensure minimum size
+        width (- max-x min-x)
+        valid-from (max 0 min-x)
+        valid-to (min 1 (+ valid-from (max MIN_DURATION width)))
+        system-from (max 0 (min 1 min-y))
+        new-event {:_valid_from valid-from
+                   :_valid_to valid-to
+                   :_system_from system-from
+                   :color default-new-event-color}]
+    (swap! state update :events conj new-event)))
+
 (defn on-mouse-up [canvas-el _e]
-  (let [selected (:selected @drag-state)]
+  (let [{:keys [mode select-start select-end selected]} @drag-state]
+    ;; If in draw mode with valid drag, create new event
+    (when (and (= mode :draw) select-start select-end)
+      (let [width (js/Math.abs (- (:x select-end) (:x select-start)))
+            height (js/Math.abs (- (:y select-end) (:y select-start)))]
+        ;; Only create if dragged a meaningful distance
+        (when (or (> width 0.02) (> height 0.02))
+          (create-event-from-drag! select-start select-end)
+          ;; Switch back to select tool if auto-select is enabled
+          (when (:auto-select @state)
+            (swap! state assoc :current-tool :select)))))
     (reset! drag-state {:dragging nil
                         :mode nil
                         :offset-x 0
@@ -499,21 +550,58 @@
                  :class "w-4 h-4 cursor-pointer"}]
         "Open"]])))
 
+(defn set-tool! [tool]
+  (swap! state assoc :current-tool tool))
+
+(defn toolbar []
+  (let [current-tool (:current-tool @state)]
+    [:div {:class "absolute top-2 left-2 bg-white rounded-lg shadow-lg border border-gray-200 p-1 flex flex-col gap-1 z-10"}
+     ;; Select tool
+     [:button {:class (str "w-8 h-8 rounded flex items-center justify-center transition-colors "
+                           (if (= current-tool :select)
+                             "bg-blue-500 text-white"
+                             "hover:bg-gray-100 text-gray-600"))
+               :title "Select"
+               :on-click #(set-tool! :select)}
+      [:svg {:width "16" :height "16" :viewBox "0 0 24 24" :fill "none" :stroke "currentColor" :stroke-width "2"}
+       [:path {:d "M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"}]
+       [:path {:d "M13 13l6 6"}]]]
+     ;; Rectangle tool
+     [:button {:class (str "w-8 h-8 rounded flex items-center justify-center transition-colors "
+                           (if (= current-tool :rectangle)
+                             "bg-blue-500 text-white"
+                             "hover:bg-gray-100 text-gray-600"))
+               :title "Rectangle"
+               :on-click #(set-tool! :rectangle)}
+      [:svg {:width "16" :height "16" :viewBox "0 0 24 24" :fill "none" :stroke "currentColor" :stroke-width "2"}
+       [:rect {:x "3" :y "3" :width "18" :height "18" :rx "2"}]]]]))
+
+(defn toggle-auto-select! []
+  (swap! state update :auto-select not))
+
 (defn side-panel []
   [:div {:class "w-64 bg-gray-800 text-white p-4 flex flex-col"}
    [:h1 {:class "text-xl font-bold mb-6"} "Bitemporal Visualizer"]
-   [:label {:class "flex items-center gap-2 cursor-pointer"}
-    [:input {:type "checkbox"
-             :checked (:show-grid @state)
-             :on-change toggle-grid!
-             :class "w-4 h-4"}]
-    [:span "Grid"]]])
+   [:div {:class "flex flex-col gap-2"}
+    [:label {:class "flex items-center gap-2 cursor-pointer"}
+     [:input {:type "checkbox"
+              :checked (:show-grid @state)
+              :on-change toggle-grid!
+              :class "w-4 h-4"}]
+     [:span "Grid"]]
+    [:label {:class "flex items-center gap-2 cursor-pointer"}
+     [:input {:type "checkbox"
+              :checked (:auto-select @state)
+              :on-change toggle-auto-select!
+              :class "w-4 h-4"}]
+     [:span "Auto-select after draw"]]]])
 
 (defn main-canvas []
   [:div {:class "flex-1 bg-gray-100 p-4"}
-   [:div {:class "w-full h-full bg-white rounded-lg shadow-md overflow-hidden"}
+   [:div {:class "relative w-full h-full bg-white rounded-lg shadow-md overflow-hidden"}
     [:canvas {:on-render canvas-lifecycle
-              :class "w-full h-full"}]]])
+              :class "w-full h-full"}]
+    [toolbar]]])
 
 (defn app []
   [:div {:class "h-screen flex"}
