@@ -54,10 +54,14 @@
                                   :show-grid (:show-grid new-state)}))))
 
 ;; Drag state (separate atom to avoid re-renders during drag)
-(def drag-state (atom {:dragging nil      ; index of event being dragged
-                       :mode nil          ; :move or :resize
-                       :offset-x 0        ; offset from click to event left edge
-                       :offset-y 0}))     ; offset from click to event bottom
+(def drag-state (atom {:dragging nil       ; index of event being dragged
+                       :mode nil           ; :move, :move-multi, :resize, or :select
+                       :offset-x 0         ; offset from click to event left edge
+                       :offset-y 0         ; offset from click to event bottom
+                       :multi-offsets nil  ; map of idx -> {offset-x, offset-y} for multi-drag
+                       :select-start nil   ; {x, y} start of selection box
+                       :select-end nil     ; {x, y} end of selection box
+                       :selected #{}}))    ; set of selected event indices
 
 ;; >> Canvas Management
 
@@ -68,13 +72,17 @@
 (defn render-canvas! [canvas-el]
   (let [container (.-parentElement canvas-el)
         width (.-clientWidth container)
-        height (.-clientHeight container)]
+        height (.-clientHeight container)
+        {:keys [mode select-start select-end selected]} @drag-state]
     (when (and (pos? width) (pos? height))
       (set! (.-width canvas-el) width)
       (set! (.-height canvas-el) height)
       (canvas/render-canvas! canvas-el
                              (:events @state)
-                             {:show-grid (:show-grid @state)}))))
+                             {:show-grid (:show-grid @state)
+                              :selection-box (when (= mode :select)
+                                               {:start select-start :end select-end})
+                              :selected selected}))))
 
 ;; >> Drag and Drop
 
@@ -115,66 +123,159 @@
 (defn on-mouse-down [canvas-el e]
   (let [{:keys [x y]} (canvas->normalized canvas-el (.-clientX e) (.-clientY e))
         events (:events @state)
-        hit (hit-test canvas-el events x y)]
-    (when hit
+        hit (hit-test canvas-el events x y)
+        currently-selected (:selected @drag-state)]
+    (if hit
       (let [{:keys [index on-handle]} hit
             event (nth events index)
             {:keys [_valid_from _valid_to _system_from]} event]
         (if on-handle
-          (reset! drag-state {:dragging index
-                              :mode :resize
-                              :offset-x (- _valid_to x)
-                              :offset-y 0})
-          (reset! drag-state {:dragging index
-                              :mode :move
-                              :offset-x (- x _valid_from)
-                              :offset-y (- _system_from y)}))))))
+          (swap! drag-state assoc
+                 :dragging index
+                 :mode :resize
+                 :offset-x (- _valid_to x)
+                 :offset-y 0)
+          ;; Check if clicking on a selected event - if so, drag all selected
+          (if (and (contains? currently-selected index) (> (count currently-selected) 1))
+            ;; Multi-drag: store offsets for all selected events
+            (let [offsets (into {}
+                            (map (fn [idx]
+                                   (let [evt (nth events idx)]
+                                     [idx {:offset-x (- x (:_valid_from evt))
+                                           :offset-y (- (:_system_from evt) y)}]))
+                                 currently-selected))]
+              (swap! drag-state assoc
+                     :dragging index
+                     :mode :move-multi
+                     :multi-offsets offsets))
+            ;; Single drag
+            (swap! drag-state assoc
+                   :dragging index
+                   :mode :move
+                   :offset-x (- x _valid_from)
+                   :offset-y (- _system_from y)
+                   :selected #{}))))
+      ;; Clicked on empty space - start selection
+      (reset! drag-state {:dragging nil
+                          :mode :select
+                          :offset-x 0
+                          :offset-y 0
+                          :select-start {:x x :y y}
+                          :select-end {:x x :y y}
+                          :selected #{}}))))
+
+(defn events-in-selection [events select-start select-end]
+  "Find indices of events that intersect with the selection box"
+  (let [min-x (min (:x select-start) (:x select-end))
+        max-x (max (:x select-start) (:x select-end))
+        min-y (min (:y select-start) (:y select-end))
+        max-y (max (:y select-start) (:y select-end))]
+    (set (keep-indexed
+          (fn [idx event]
+            (let [{:keys [_valid_from _valid_to _system_from]} event]
+              ;; Event intersects if its x range overlaps selection x range
+              ;; and its _system_from is within selection y range
+              ;; (since events extend to infinity upward, we check if _system_from <= max-y)
+              (when (and (< _valid_from max-x)
+                         (> _valid_to min-x)
+                         (<= _system_from max-y)
+                         (>= 1 min-y)) ; event goes to top, so always >= min-y if _system_from <= max-y
+                idx)))
+          events))))
 
 (defn on-mouse-move [canvas-el e]
   (let [{:keys [x y]} (canvas->normalized canvas-el (.-clientX e) (.-clientY e))
-        {:keys [dragging mode offset-x offset-y]} @drag-state]
-    ;; Update cursor based on what we're hovering over
-    (if dragging
-      ;; While dragging, keep the appropriate cursor
+        {:keys [dragging mode offset-x offset-y select-start multi-offsets selected]} @drag-state]
+    ;; Update cursor based on mode and what we're hovering over
+    (cond
+      (= mode :select)
+      (set! (.-cursor (.-style canvas-el)) "crosshair")
+
+      dragging
       (set! (.-cursor (.-style canvas-el))
             (if (= mode :resize) "ew-resize" "move"))
-      ;; Not dragging - check what we're hovering over
+
+      :else
       (let [hit (hit-test canvas-el (:events @state) x y)]
         (set! (.-cursor (.-style canvas-el))
               (cond
                 (and hit (:on-handle hit)) "ew-resize"
                 hit "move"
-                :else "default"))))
-    ;; Handle dragging
-    (when dragging
+                :else "crosshair"))))
+    ;; Handle different modes
+    (cond
+      ;; Selection mode
+      (= mode :select)
       (let [events (:events @state)
-            event (nth events dragging)]
-        (if (= mode :resize)
-          ;; Resize mode - change _valid_to
-          (let [new-valid-to (+ x offset-x)
-                min-valid-to (+ (:_valid_from event) MIN_DURATION)
-                new-valid-to (max min-valid-to (min 1 new-valid-to))
-                updated-event (assoc event :_valid_to new-valid-to)
-                updated-events (assoc (vec events) dragging updated-event)]
-            (swap! state assoc :events updated-events)
-            (render-canvas! canvas-el))
-          ;; Move mode - change position
-          (let [event-width (- (:_valid_to event) (:_valid_from event))
-                new-valid-from (- x offset-x)
-                new-system-from (+ y offset-y)
-                new-valid-from (max 0 (min (- 1 event-width) new-valid-from))
-                new-system-from (max 0 (min 1 new-system-from))
-                new-valid-to (+ new-valid-from event-width)
-                updated-event (assoc event
-                                     :_valid_from new-valid-from
-                                     :_valid_to new-valid-to
-                                     :_system_from new-system-from)
-                updated-events (assoc (vec events) dragging updated-event)]
-            (swap! state assoc :events updated-events)
-            (render-canvas! canvas-el)))))))
+            selected (events-in-selection events select-start {:x x :y y})]
+        (swap! drag-state assoc
+               :select-end {:x x :y y}
+               :selected selected)
+        (render-canvas! canvas-el))
 
-(defn on-mouse-up [_canvas-el _e]
-  (reset! drag-state {:dragging nil :mode nil :offset-x 0 :offset-y 0}))
+      ;; Resize mode
+      (and dragging (= mode :resize))
+      (let [events (:events @state)
+            event (nth events dragging)
+            new-valid-to (+ x offset-x)
+            min-valid-to (+ (:_valid_from event) MIN_DURATION)
+            new-valid-to (max min-valid-to (min 1 new-valid-to))
+            updated-event (assoc event :_valid_to new-valid-to)
+            updated-events (assoc (vec events) dragging updated-event)]
+        (swap! state assoc :events updated-events)
+        (render-canvas! canvas-el))
+
+      ;; Multi-move mode - move all selected events together
+      (and dragging (= mode :move-multi))
+      (let [events (vec (:events @state))
+            updated-events (reduce
+                            (fn [evts idx]
+                              (let [event (nth evts idx)
+                                    {:keys [offset-x offset-y]} (get multi-offsets idx)
+                                    event-width (- (:_valid_to event) (:_valid_from event))
+                                    new-valid-from (- x offset-x)
+                                    new-system-from (+ y offset-y)
+                                    new-valid-from (max 0 (min (- 1 event-width) new-valid-from))
+                                    new-system-from (max 0 (min 1 new-system-from))
+                                    new-valid-to (+ new-valid-from event-width)
+                                    updated-event (assoc event
+                                                         :_valid_from new-valid-from
+                                                         :_valid_to new-valid-to
+                                                         :_system_from new-system-from)]
+                                (assoc evts idx updated-event)))
+                            events
+                            (keys multi-offsets))]
+        (swap! state assoc :events updated-events)
+        (render-canvas! canvas-el))
+
+      ;; Single move mode
+      (and dragging (= mode :move))
+      (let [events (:events @state)
+            event (nth events dragging)
+            event-width (- (:_valid_to event) (:_valid_from event))
+            new-valid-from (- x offset-x)
+            new-system-from (+ y offset-y)
+            new-valid-from (max 0 (min (- 1 event-width) new-valid-from))
+            new-system-from (max 0 (min 1 new-system-from))
+            new-valid-to (+ new-valid-from event-width)
+            updated-event (assoc event
+                                 :_valid_from new-valid-from
+                                 :_valid_to new-valid-to
+                                 :_system_from new-system-from)
+            updated-events (assoc (vec events) dragging updated-event)]
+        (swap! state assoc :events updated-events)
+        (render-canvas! canvas-el)))))
+
+(defn on-mouse-up [canvas-el _e]
+  (let [selected (:selected @drag-state)]
+    (reset! drag-state {:dragging nil
+                        :mode nil
+                        :offset-x 0
+                        :offset-y 0
+                        :select-start nil
+                        :select-end nil
+                        :selected selected})
+    (render-canvas! canvas-el)))
 
 (defn canvas-lifecycle [node lifecycle _data]
   (case lifecycle

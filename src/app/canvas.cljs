@@ -10,7 +10,11 @@
    :axis-color "#374151"
    :axis-label-color "#6b7280"
    :handle-width 8
-   :handle-color "rgba(100, 100, 100, 0.4)"})
+   :handle-color "rgba(100, 100, 100, 0.4)"
+   :selection-fill "rgba(59, 130, 246, 0.2)"
+   :selection-stroke "rgba(59, 130, 246, 0.8)"
+   :selected-stroke "rgba(59, 130, 246, 1)"
+   :selected-stroke-width 2})
 
 ;; >> Drawing Helpers
 
@@ -94,7 +98,7 @@
 (defn sort-events-by-system-time [events]
   (sort-by :_system_from events))
 
-(defn draw-event! [ctx event width height padding]
+(defn draw-event! [ctx event width height padding selected?]
   (let [{:keys [_valid_from _valid_to _system_from color]} event
         draw-width (- width (* 2 padding))
         draw-height (- height (* 2 padding))
@@ -110,8 +114,13 @@
     (set! (.-fillStyle ctx) (rgb->css color))
     (.fillRect ctx x1 y-top (- x2 x1) (- y-bottom y-top))
     ;; Stroke only left, bottom, right sides (no top line - goes to infinity)
-    (set! (.-strokeStyle ctx) "#000000")
-    (set! (.-lineWidth ctx) 1)
+    (if selected?
+      (do
+        (set! (.-strokeStyle ctx) (:selected-stroke config))
+        (set! (.-lineWidth ctx) (:selected-stroke-width config)))
+      (do
+        (set! (.-strokeStyle ctx) "#000000")
+        (set! (.-lineWidth ctx) 1)))
     (.beginPath ctx)
     (.moveTo ctx x1 y-top)
     (.lineTo ctx x1 y-bottom)
@@ -122,10 +131,34 @@
     (set! (.-fillStyle ctx) (:handle-color config))
     (.fillRect ctx (- x2 handle-width) y-top handle-width (- y-bottom y-top))))
 
-(defn draw-events! [ctx events width height padding]
-  (let [sorted-events (sort-events-by-system-time events)]
-    (doseq [event sorted-events]
-      (draw-event! ctx event width height padding))))
+(defn draw-events! [ctx events width height padding selected]
+  (let [indexed-events (map-indexed vector events)
+        sorted-events (sort-by #(:_system_from (second %)) indexed-events)]
+    (doseq [[idx event] sorted-events]
+      (draw-event! ctx event width height padding (contains? selected idx)))))
+
+(defn draw-selection-box! [ctx width height padding selection-box]
+  (when selection-box
+    (let [{:keys [start end]} selection-box
+          draw-width (- width (* 2 padding))
+          draw-height (- height (* 2 padding))
+          ;; Convert normalized coords to pixel coords
+          x1 (+ padding (* (:x start) draw-width))
+          y1 (- height padding (* (:y start) draw-height))
+          x2 (+ padding (* (:x end) draw-width))
+          y2 (- height padding (* (:y end) draw-height))
+          ;; Get min/max for proper rectangle
+          rx (min x1 x2)
+          ry (min y1 y2)
+          rw (js/Math.abs (- x2 x1))
+          rh (js/Math.abs (- y2 y1))]
+      ;; Fill
+      (set! (.-fillStyle ctx) (:selection-fill config))
+      (.fillRect ctx rx ry rw rh)
+      ;; Stroke
+      (set! (.-strokeStyle ctx) (:selection-stroke config))
+      (set! (.-lineWidth ctx) 1)
+      (.strokeRect ctx rx ry rw rh))))
 
 ;; >> Main Render Function
 
@@ -136,14 +169,18 @@
           height (.-height canvas)
           padding (:padding config)
           divisions (:grid-divisions config)
-          show-grid (get opts :show-grid false)]
+          show-grid (get opts :show-grid false)
+          selection-box (get opts :selection-box)
+          selected (or (get opts :selected) #{})]
       ;; Pass 1: Background
       (clear-canvas! ctx width height)
       (draw-grid! ctx width height padding divisions (:grid-color config))
       (draw-axes! ctx width height padding)
       (draw-axis-labels! ctx width height padding)
       ;; Pass 2: Events (use 0..1 normalized coordinates)
-      (draw-events! ctx events width height padding)
+      (draw-events! ctx events width height padding selected)
       ;; Pass 3: Foreground
       (when show-grid
-        (draw-grid! ctx width height padding divisions (:foreground-grid-color config))))))
+        (draw-grid! ctx width height padding divisions (:foreground-grid-color config)))
+      ;; Pass 4: Selection box (drawn on top)
+      (draw-selection-box! ctx width height padding selection-box))))
