@@ -422,24 +422,35 @@
                               :y (.-clientY e)
                               :target-indices target-indices})))))
 
+(defn on-keydown [e]
+  (let [key (.-key e)
+        selected (:selected @drag-state)]
+    (when (and (or (= key "Delete") (= key "Backspace"))
+               (seq selected))
+      (.preventDefault e)
+      (delete-events! selected))))
+
 (defn canvas-lifecycle [node lifecycle _data]
   (case lifecycle
     "mount" (let [resize-handler #(render-canvas! node)
                   mousedown-handler #(on-mouse-down node %)
                   mousemove-handler #(on-mouse-move node %)
                   mouseup-handler #(on-mouse-up node %)
-                  contextmenu-handler #(on-context-menu node %)]
+                  contextmenu-handler #(on-context-menu node %)
+                  keydown-handler on-keydown]
               (.addEventListener js/window "resize" resize-handler)
               (.addEventListener node "mousedown" mousedown-handler)
               (.addEventListener js/window "mousemove" mousemove-handler)
               (.addEventListener js/window "mouseup" mouseup-handler)
               (.addEventListener node "contextmenu" contextmenu-handler)
+              (.addEventListener js/window "keydown" keydown-handler)
               (render-canvas! node)
               {:resize resize-handler
                :mousedown mousedown-handler
                :mousemove mousemove-handler
                :mouseup mouseup-handler
-               :contextmenu contextmenu-handler})
+               :contextmenu contextmenu-handler
+               :keydown keydown-handler})
     "update" (render-canvas! node)
     "unmount" nil
     nil))
@@ -520,6 +531,20 @@
                         indices)]
     (swap! state assoc :events updated-events)))
 
+(defn delete-events! [indices]
+  (when (seq indices)
+    (let [events (:events @state)
+          indices-set (set indices)
+          updated-events (vec (keep-indexed
+                                (fn [idx event]
+                                  (when-not (contains? indices-set idx)
+                                    event))
+                                events))]
+      ;; Clear selection first since indices become invalid
+      (swap! drag-state assoc :selected #{})
+      ;; Then update events (triggers re-render with cleared selection)
+      (swap! state assoc :events updated-events))))
+
 (defn color-menu []
   (let [{:keys [open x y target-indices]} @context-menu
         events (:events @state)
@@ -548,7 +573,14 @@
                  :checked all-open?
                  :on-change #(toggle-events-open! target-indices (not all-open?))
                  :class "w-4 h-4 cursor-pointer"}]
-        "Open"]])))
+        "Open"]
+       ;; Separator
+       [:div {:class "h-px bg-gray-200 my-2"}]
+       ;; Delete button
+       [:button {:class "w-full text-left text-sm text-red-600 hover:bg-red-50 px-1 py-1 rounded cursor-pointer"
+                 :on-click #(do (delete-events! target-indices)
+                                (close-context-menu!))}
+        "Delete"]])))
 
 (defn set-tool! [tool]
   (swap! state assoc :current-tool tool))
