@@ -4,10 +4,10 @@
 
 (def config
   {:padding 50
+   :cell-size 50
    :grid-color "#e5e7eb"
    :axis-color "#374151"
-   :axis-label-color "#6b7280"
-   :grid-divisions 10})
+   :axis-label-color "#6b7280"})
 
 ;; >> Drawing Helpers
 
@@ -15,23 +15,24 @@
   (set! (.-fillStyle ctx) "#ffffff")
   (.fillRect ctx 0 0 width height))
 
-(defn draw-grid! [ctx width height padding divisions]
+(defn draw-grid! [ctx width height padding cell-size]
   (let [draw-width (- width (* 2 padding))
         draw-height (- height (* 2 padding))
-        step-x (/ draw-width divisions)
-        step-y (/ draw-height divisions)]
+        ;; Calculate how many cells fit in each direction
+        cols (js/Math.floor (/ draw-width cell-size))
+        rows (js/Math.floor (/ draw-height cell-size))]
     (set! (.-strokeStyle ctx) (:grid-color config))
     (set! (.-lineWidth ctx) 1)
     ;; Vertical lines
-    (doseq [i (range (inc divisions))]
-      (let [x (+ padding (* i step-x))]
+    (doseq [i (range (inc cols))]
+      (let [x (+ padding (* i cell-size))]
         (.beginPath ctx)
         (.moveTo ctx x padding)
         (.lineTo ctx x (- height padding))
         (.stroke ctx)))
     ;; Horizontal lines
-    (doseq [i (range (inc divisions))]
-      (let [y (+ padding (* i step-y))]
+    (doseq [i (range (inc rows))]
+      (let [y (- height padding (* i cell-size))]
         (.beginPath ctx)
         (.moveTo ctx padding y)
         (.lineTo ctx (- width padding) y)
@@ -91,43 +92,42 @@
 (defn sort-events-by-system-time [events]
   (sort-by :_system_from events))
 
-(defn draw-event! [ctx event width height padding max-valid max-system]
+(defn draw-event! [ctx event width height padding cell-size]
   (let [{:keys [_valid_from _valid_to _system_from color]} event
-        draw-width (- width (* 2 padding))
-        draw-height (- height (* 2 padding))
-        ;; Map valid time to x coordinates (left to right)
-        x1 (+ padding (* (/ _valid_from max-valid) draw-width))
-        x2 (+ padding (* (/ _valid_to max-valid) draw-width))
-        ;; Map system time to y coordinates (bottom to top, inverted because canvas y goes down)
-        y (- height padding (* (/ _system_from max-system) draw-height))
-        rect-height 20
-        rect-y (- y (/ rect-height 2))]
+        ;; Map valid time to x coordinates using cell-size as the unit
+        x1 (+ padding (* _valid_from cell-size))
+        x2 (+ padding (* _valid_to cell-size))
+        ;; Map system time to y coordinate (bottom to top)
+        ;; _system_to is infinity, so rect extends from _system_from to top
+        y-bottom (- height padding (* _system_from cell-size))
+        y-top padding
+        rect-height (- y-bottom y-top)]
     (set! (.-fillStyle ctx) (rgb->css color))
     (set! (.-strokeStyle ctx) "#000000")
     (set! (.-lineWidth ctx) 1)
-    (.fillRect ctx x1 rect-y (- x2 x1) rect-height)
-    (.strokeRect ctx x1 rect-y (- x2 x1) rect-height)))
+    (.fillRect ctx x1 y-top (- x2 x1) rect-height)
+    (.strokeRect ctx x1 y-top (- x2 x1) rect-height)))
 
-(defn draw-events! [ctx events width height padding max-valid max-system]
+(defn draw-events! [ctx events width height padding cell-size]
   (let [sorted-events (sort-events-by-system-time events)]
     (doseq [event sorted-events]
-      (draw-event! ctx event width height padding max-valid max-system))))
+      (draw-event! ctx event width height padding cell-size))))
 
 ;; >> Main Render Function
 
-(defn render-canvas! [canvas events {:keys [max-valid max-system]}]
+(defn render-canvas! [canvas events]
   (when canvas
     (let [ctx (.getContext canvas "2d")
           width (.-width canvas)
           height (.-height canvas)
           padding (:padding config)
-          divisions (:grid-divisions config)]
+          cell-size (:cell-size config)]
       ;; Pass 1: Background
       (clear-canvas! ctx width height)
-      (draw-grid! ctx width height padding divisions)
+      (draw-grid! ctx width height padding cell-size)
       (draw-axes! ctx width height padding)
       (draw-axis-labels! ctx width height padding)
       ;; Pass 2: Events
-      (draw-events! ctx events width height padding max-valid max-system)
+      (draw-events! ctx events width height padding cell-size)
       ;; Pass 3: Foreground (placeholder for future overlays)
       )))

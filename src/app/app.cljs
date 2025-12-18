@@ -33,9 +33,7 @@
     (when (and (pos? width) (pos? height))
       (set! (.-width canvas-el) width)
       (set! (.-height canvas-el) height)
-      (canvas/render-canvas! canvas-el
-                             (:events @state)
-                             {:max-valid 10 :max-system 6}))))
+      (canvas/render-canvas! canvas-el (:events @state)))))
 
 (defn canvas-lifecycle [node lifecycle _data]
   (case lifecycle
