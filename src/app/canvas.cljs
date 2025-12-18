@@ -8,7 +8,9 @@
    :grid-color "#e5e7eb"
    :foreground-grid-color "rgba(0, 0, 0, 0.3)"
    :axis-color "#374151"
-   :axis-label-color "#6b7280"})
+   :axis-label-color "#6b7280"
+   :handle-width 8
+   :handle-color "rgba(100, 100, 100, 0.4)"})
 
 ;; >> Drawing Helpers
 
@@ -96,6 +98,7 @@
   (let [{:keys [_valid_from _valid_to _system_from color]} event
         draw-width (- width (* 2 padding))
         draw-height (- height (* 2 padding))
+        handle-width (:handle-width config)
         ;; Map 0..1 valid time to x coordinates
         x1 (+ padding (* _valid_from draw-width))
         x2 (+ padding (* _valid_to draw-width))
@@ -114,7 +117,10 @@
     (.lineTo ctx x1 y-bottom)
     (.lineTo ctx x2 y-bottom)
     (.lineTo ctx x2 y-top)
-    (.stroke ctx)))
+    (.stroke ctx)
+    ;; Draw resize handle on right edge
+    (set! (.-fillStyle ctx) (:handle-color config))
+    (.fillRect ctx (- x2 handle-width) y-top handle-width (- y-bottom y-top))))
 
 (defn draw-events! [ctx events width height padding]
   (let [sorted-events (sort-events-by-system-time events)]

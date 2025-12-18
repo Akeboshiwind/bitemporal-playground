@@ -55,12 +55,15 @@
 
 ;; Drag state (separate atom to avoid re-renders during drag)
 (def drag-state (atom {:dragging nil      ; index of event being dragged
+                       :mode nil          ; :move or :resize
                        :offset-x 0        ; offset from click to event left edge
                        :offset-y 0}))     ; offset from click to event bottom
 
 ;; >> Canvas Management
 
-(def PADDING 50) ;; Must match canvas.cljs config
+(def PADDING 50)        ;; Must match canvas.cljs config
+(def HANDLE_WIDTH 8)    ;; Must match canvas.cljs config
+(def MIN_DURATION 0.05) ;; Minimum event duration in normalized units
 
 (defn render-canvas! [canvas-el]
   (let [container (.-parentElement canvas-el)
@@ -88,58 +91,90 @@
         norm-y (- 1 (/ (- canvas-y PADDING) draw-height))]
     {:x norm-x :y norm-y}))
 
-(defn hit-test [events norm-x norm-y]
-  "Find which event (if any) contains the point. Returns index or nil.
+(defn hit-test [canvas-el events norm-x norm-y]
+  "Find which event (if any) contains the point. Returns {:index idx :on-handle bool} or nil.
    Tests in reverse order (top events first) since later events are drawn on top."
-  (let [sorted-indices (->> events
+  (let [width (.-width canvas-el)
+        draw-width (- width (* 2 PADDING))
+        handle-norm-width (/ HANDLE_WIDTH draw-width)
+        sorted-indices (->> events
                             (map-indexed vector)
                             (sort-by #(:_system_from (second %)))
                             (map first)
                             reverse)]
-    (first (filter (fn [idx]
-                     (let [event (nth events idx)
-                           {:keys [_valid_from _valid_to _system_from]} event]
-                       (and (>= norm-x _valid_from)
-                            (<= norm-x _valid_to)
-                            (>= norm-y _system_from))))
-                   sorted-indices))))
+    (first (keep (fn [idx]
+                   (let [event (nth events idx)
+                         {:keys [_valid_from _valid_to _system_from]} event]
+                     (when (and (>= norm-x _valid_from)
+                                (<= norm-x _valid_to)
+                                (>= norm-y _system_from))
+                       {:index idx
+                        :on-handle (>= norm-x (- _valid_to handle-norm-width))})))
+                 sorted-indices))))
 
 (defn on-mouse-down [canvas-el e]
   (let [{:keys [x y]} (canvas->normalized canvas-el (.-clientX e) (.-clientY e))
         events (:events @state)
-        hit-idx (hit-test events x y)]
-    (when hit-idx
-      (let [event (nth events hit-idx)
-            {:keys [_valid_from _system_from]} event]
-        (reset! drag-state {:dragging hit-idx
-                            :offset-x (- x _valid_from)
-                            :offset-y (- _system_from y)})))))
+        hit (hit-test canvas-el events x y)]
+    (when hit
+      (let [{:keys [index on-handle]} hit
+            event (nth events index)
+            {:keys [_valid_from _valid_to _system_from]} event]
+        (if on-handle
+          (reset! drag-state {:dragging index
+                              :mode :resize
+                              :offset-x (- _valid_to x)
+                              :offset-y 0})
+          (reset! drag-state {:dragging index
+                              :mode :move
+                              :offset-x (- x _valid_from)
+                              :offset-y (- _system_from y)}))))))
 
 (defn on-mouse-move [canvas-el e]
-  (when-let [idx (:dragging @drag-state)]
-    (let [{:keys [x y]} (canvas->normalized canvas-el (.-clientX e) (.-clientY e))
-          {:keys [offset-x offset-y]} @drag-state
-          events (:events @state)
-          event (nth events idx)
-          event-width (- (:_valid_to event) (:_valid_from event))
-          ;; Calculate new position
-          new-valid-from (- x offset-x)
-          new-system-from (+ y offset-y)
-          ;; Clamp to valid range
-          new-valid-from (max 0 (min (- 1 event-width) new-valid-from))
-          new-system-from (max 0 (min 1 new-system-from))
-          new-valid-to (+ new-valid-from event-width)
-          ;; Update event
-          updated-event (assoc event
-                               :_valid_from new-valid-from
-                               :_valid_to new-valid-to
-                               :_system_from new-system-from)
-          updated-events (assoc (vec events) idx updated-event)]
-      (swap! state assoc :events updated-events)
-      (render-canvas! canvas-el))))
+  (let [{:keys [x y]} (canvas->normalized canvas-el (.-clientX e) (.-clientY e))
+        {:keys [dragging mode offset-x offset-y]} @drag-state]
+    ;; Update cursor based on what we're hovering over
+    (if dragging
+      ;; While dragging, keep the appropriate cursor
+      (set! (.-cursor (.-style canvas-el))
+            (if (= mode :resize) "ew-resize" "move"))
+      ;; Not dragging - check what we're hovering over
+      (let [hit (hit-test canvas-el (:events @state) x y)]
+        (set! (.-cursor (.-style canvas-el))
+              (cond
+                (and hit (:on-handle hit)) "ew-resize"
+                hit "move"
+                :else "default"))))
+    ;; Handle dragging
+    (when dragging
+      (let [events (:events @state)
+            event (nth events dragging)]
+        (if (= mode :resize)
+          ;; Resize mode - change _valid_to
+          (let [new-valid-to (+ x offset-x)
+                min-valid-to (+ (:_valid_from event) MIN_DURATION)
+                new-valid-to (max min-valid-to (min 1 new-valid-to))
+                updated-event (assoc event :_valid_to new-valid-to)
+                updated-events (assoc (vec events) dragging updated-event)]
+            (swap! state assoc :events updated-events)
+            (render-canvas! canvas-el))
+          ;; Move mode - change position
+          (let [event-width (- (:_valid_to event) (:_valid_from event))
+                new-valid-from (- x offset-x)
+                new-system-from (+ y offset-y)
+                new-valid-from (max 0 (min (- 1 event-width) new-valid-from))
+                new-system-from (max 0 (min 1 new-system-from))
+                new-valid-to (+ new-valid-from event-width)
+                updated-event (assoc event
+                                     :_valid_from new-valid-from
+                                     :_valid_to new-valid-to
+                                     :_system_from new-system-from)
+                updated-events (assoc (vec events) dragging updated-event)]
+            (swap! state assoc :events updated-events)
+            (render-canvas! canvas-el)))))))
 
 (defn on-mouse-up [_canvas-el _e]
-  (reset! drag-state {:dragging nil :offset-x 0 :offset-y 0}))
+  (reset! drag-state {:dragging nil :mode nil :offset-x 0 :offset-y 0}))
 
 (defn canvas-lifecycle [node lifecycle _data]
   (case lifecycle
