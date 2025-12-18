@@ -121,12 +121,16 @@
                             reverse)]
     (first (keep (fn [idx]
                    (let [event (nth events idx)
-                         {:keys [_valid_from _valid_to _system_from]} event]
+                         {:keys [_valid_from _valid_to _system_from]} event
+                         open? (nil? _valid_to)
+                         effective-valid-to (if open? 1 _valid_to)]
                      (when (and (>= norm-x _valid_from)
-                                (<= norm-x _valid_to)
+                                (<= norm-x effective-valid-to)
                                 (>= norm-y _system_from))
                        {:index idx
-                        :on-handle (>= norm-x (- _valid_to handle-norm-width))})))
+                        ;; Open events have no handle
+                        :on-handle (and (not open?)
+                                        (>= norm-x (- effective-valid-to handle-norm-width)))})))
                  sorted-indices))))
 
 (defn on-mouse-down [canvas-el e]
@@ -205,12 +209,13 @@
         max-y (max (:y select-start) (:y select-end))]
     (set (keep-indexed
           (fn [idx event]
-            (let [{:keys [_valid_from _valid_to _system_from]} event]
+            (let [{:keys [_valid_from _valid_to _system_from]} event
+                  effective-valid-to (if (nil? _valid_to) 1 _valid_to)]
               ;; Event intersects if its x range overlaps selection x range
               ;; and its _system_from is within selection y range
               ;; (since events extend to infinity upward, we check if _system_from <= max-y)
               (when (and (< _valid_from max-x)
-                         (> _valid_to min-x)
+                         (> effective-valid-to min-x)
                          (<= _system_from max-y)
                          (>= 1 min-y)) ; event goes to top, so always >= min-y if _system_from <= max-y
                 idx)))
@@ -296,16 +301,20 @@
                             (fn [evts idx]
                               (let [event (nth evts idx)
                                     {:keys [offset-x offset-y]} (get multi-offsets idx)
-                                    event-width (- (:_valid_to event) (:_valid_from event))
+                                    open? (nil? (:_valid_to event))
+                                    event-width (if open? 0 (- (:_valid_to event) (:_valid_from event)))
                                     new-valid-from (- x offset-x)
                                     new-system-from (+ y offset-y)
                                     new-valid-from (max 0 (min (- 1 event-width) new-valid-from))
                                     new-system-from (max 0 (min 1 new-system-from))
-                                    new-valid-to (+ new-valid-from event-width)
-                                    updated-event (assoc event
-                                                         :_valid_from new-valid-from
-                                                         :_valid_to new-valid-to
-                                                         :_system_from new-system-from)]
+                                    updated-event (if open?
+                                                    (assoc event
+                                                           :_valid_from new-valid-from
+                                                           :_system_from new-system-from)
+                                                    (assoc event
+                                                           :_valid_from new-valid-from
+                                                           :_valid_to (+ new-valid-from event-width)
+                                                           :_system_from new-system-from))]
                                 (assoc evts idx updated-event)))
                             events
                             (keys multi-offsets))]
@@ -316,16 +325,20 @@
       (and dragging (= mode :move))
       (let [events (:events @state)
             event (nth events dragging)
-            event-width (- (:_valid_to event) (:_valid_from event))
+            open? (nil? (:_valid_to event))
+            event-width (if open? 0 (- (:_valid_to event) (:_valid_from event)))
             new-valid-from (- x offset-x)
             new-system-from (+ y offset-y)
             new-valid-from (max 0 (min (- 1 event-width) new-valid-from))
             new-system-from (max 0 (min 1 new-system-from))
-            new-valid-to (+ new-valid-from event-width)
-            updated-event (assoc event
-                                 :_valid_from new-valid-from
-                                 :_valid_to new-valid-to
-                                 :_system_from new-system-from)
+            updated-event (if open?
+                            (assoc event
+                                   :_valid_from new-valid-from
+                                   :_system_from new-system-from)
+                            (assoc event
+                                   :_valid_from new-valid-from
+                                   :_valid_to (+ new-valid-from event-width)
+                                   :_system_from new-system-from))
             updated-events (assoc (vec events) dragging updated-event)]
         (swap! state assoc :events updated-events)
         (render-canvas! canvas-el)))))
@@ -441,23 +454,50 @@
     (swap! state assoc :events updated-events))
   (close-context-menu!))
 
+(defn toggle-events-open! [indices make-open?]
+  (let [events (vec (:events @state))
+        updated-events (reduce
+                        (fn [evts idx]
+                          (let [event (nth evts idx)]
+                            (if make-open?
+                              (assoc evts idx (assoc event :_valid_to nil))
+                              ;; When closing, set _valid_to to 1.0 (right edge)
+                              ;; or maintain a minimum width from _valid_from
+                              (let [new-valid-to (min 1 (+ (:_valid_from event) 0.2))]
+                                (assoc evts idx (assoc event :_valid_to new-valid-to))))))
+                        events
+                        indices)]
+    (swap! state assoc :events updated-events)))
+
 (defn color-menu []
-  (let [{:keys [open x y target-indices]} @context-menu]
+  (let [{:keys [open x y target-indices]} @context-menu
+        events (:events @state)
+        ;; Check if all targeted events are open
+        all-open? (and (seq target-indices)
+                       (every? #(nil? (:_valid_to (nth events %))) target-indices))]
     (when open
       [:div {:class "fixed bg-white rounded-lg shadow-xl border border-gray-200 p-2 z-50"
              :style {:left (str x "px")
                      :top (str y "px")}}
+       ;; Color swatches row
        [:div {:class "flex gap-1 items-center"}
-        ;; Preset color swatches
         (for [color preset-colors]
           [:button {:key (rgb->css color)
                     :class "w-6 h-6 rounded border border-gray-300 hover:scale-110 transition-transform cursor-pointer"
                     :style {:background-color (rgb->css color)}
                     :on-click #(set-event-colors! target-indices color)}])
-        ;; Color picker
         [:input {:type "color"
                  :class "w-6 h-6 rounded cursor-pointer border-0 p-0"
-                 :on-change #(set-event-colors! target-indices (hex->rgb (.-value (.-target %))))}]]])))
+                 :on-change #(set-event-colors! target-indices (hex->rgb (.-value (.-target %))))}]]
+       ;; Separator
+       [:div {:class "h-px bg-gray-200 my-2"}]
+       ;; Open checkbox
+       [:label {:class "flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none px-1"}
+        [:input {:type "checkbox"
+                 :checked all-open?
+                 :on-change #(toggle-events-open! target-indices (not all-open?))
+                 :class "w-4 h-4 cursor-pointer"}]
+        "Open"]])))
 
 (defn side-panel []
   [:div {:class "w-64 bg-gray-800 text-white p-4 flex flex-col"}

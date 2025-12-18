@@ -100,12 +100,13 @@
 
 (defn draw-event! [ctx event width height padding selected?]
   (let [{:keys [_valid_from _valid_to _system_from color]} event
+        open? (nil? _valid_to)
         draw-width (- width (* 2 padding))
         draw-height (- height (* 2 padding))
         handle-width (:handle-width config)
         ;; Map 0..1 valid time to x coordinates
         x1 (+ padding (* _valid_from draw-width))
-        x2 (+ padding (* _valid_to draw-width))
+        x2 (+ padding (* (if open? 1 _valid_to) draw-width))
         ;; Map 0..1 system time to y coordinate (bottom to top)
         ;; _system_to is infinity, so rect extends from _system_from to top
         y-bottom (- height padding (* _system_from draw-height))
@@ -113,7 +114,7 @@
     ;; Fill the rectangle
     (set! (.-fillStyle ctx) (rgb->css color))
     (.fillRect ctx x1 y-top (- x2 x1) (- y-bottom y-top))
-    ;; Stroke only left, bottom, right sides (no top line - goes to infinity)
+    ;; Stroke sides (no top line - goes to infinity, no right line if open)
     (if selected?
       (do
         (set! (.-strokeStyle ctx) (:selected-stroke config))
@@ -125,11 +126,13 @@
     (.moveTo ctx x1 y-top)
     (.lineTo ctx x1 y-bottom)
     (.lineTo ctx x2 y-bottom)
-    (.lineTo ctx x2 y-top)
+    (when-not open?
+      (.lineTo ctx x2 y-top))
     (.stroke ctx)
-    ;; Draw resize handle on right edge
-    (set! (.-fillStyle ctx) (:handle-color config))
-    (.fillRect ctx (- x2 handle-width) y-top handle-width (- y-bottom y-top))))
+    ;; Draw resize handle on right edge (only for closed events)
+    (when-not open?
+      (set! (.-fillStyle ctx) (:handle-color config))
+      (.fillRect ctx (- x2 handle-width) y-top handle-width (- y-bottom y-top)))))
 
 (defn draw-events! [ctx events width height padding selected]
   (let [indexed-events (map-indexed vector events)
