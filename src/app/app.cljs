@@ -24,7 +24,14 @@
                   :events sample-events
                   :canvas-ref nil}))
 
+;; Drag state (separate atom to avoid re-renders during drag)
+(def drag-state (atom {:dragging nil      ; index of event being dragged
+                       :offset-x 0        ; offset from click to event left edge
+                       :offset-y 0}))     ; offset from click to event bottom
+
 ;; >> Canvas Management
+
+(def PADDING 50) ;; Must match canvas.cljs config
 
 (defn render-canvas! [canvas-el]
   (let [container (.-parentElement canvas-el)
@@ -35,13 +42,89 @@
       (set! (.-height canvas-el) height)
       (canvas/render-canvas! canvas-el (:events @state)))))
 
+;; >> Drag and Drop
+
+(defn canvas->normalized [canvas-el client-x client-y]
+  "Convert canvas pixel coordinates to 0..1 normalized coordinates"
+  (let [rect (.getBoundingClientRect canvas-el)
+        canvas-x (- client-x (.-left rect))
+        canvas-y (- client-y (.-top rect))
+        width (.-width canvas-el)
+        height (.-height canvas-el)
+        draw-width (- width (* 2 PADDING))
+        draw-height (- height (* 2 PADDING))
+        norm-x (/ (- canvas-x PADDING) draw-width)
+        norm-y (- 1 (/ (- canvas-y PADDING) draw-height))]
+    {:x norm-x :y norm-y}))
+
+(defn hit-test [events norm-x norm-y]
+  "Find which event (if any) contains the point. Returns index or nil.
+   Tests in reverse order (top events first) since later events are drawn on top."
+  (let [sorted-indices (->> events
+                            (map-indexed vector)
+                            (sort-by #(:_system_from (second %)))
+                            (map first)
+                            reverse)]
+    (first (filter (fn [idx]
+                     (let [event (nth events idx)
+                           {:keys [_valid_from _valid_to _system_from]} event]
+                       (and (>= norm-x _valid_from)
+                            (<= norm-x _valid_to)
+                            (>= norm-y _system_from))))
+                   sorted-indices))))
+
+(defn on-mouse-down [canvas-el e]
+  (let [{:keys [x y]} (canvas->normalized canvas-el (.-clientX e) (.-clientY e))
+        events (:events @state)
+        hit-idx (hit-test events x y)]
+    (when hit-idx
+      (let [event (nth events hit-idx)
+            {:keys [_valid_from _system_from]} event]
+        (reset! drag-state {:dragging hit-idx
+                            :offset-x (- x _valid_from)
+                            :offset-y (- _system_from y)})))))
+
+(defn on-mouse-move [canvas-el e]
+  (when-let [idx (:dragging @drag-state)]
+    (let [{:keys [x y]} (canvas->normalized canvas-el (.-clientX e) (.-clientY e))
+          {:keys [offset-x offset-y]} @drag-state
+          events (:events @state)
+          event (nth events idx)
+          event-width (- (:_valid_to event) (:_valid_from event))
+          ;; Calculate new position
+          new-valid-from (- x offset-x)
+          new-system-from (+ y offset-y)
+          ;; Clamp to valid range
+          new-valid-from (max 0 (min (- 1 event-width) new-valid-from))
+          new-system-from (max 0 (min 1 new-system-from))
+          new-valid-to (+ new-valid-from event-width)
+          ;; Update event
+          updated-event (assoc event
+                               :_valid_from new-valid-from
+                               :_valid_to new-valid-to
+                               :_system_from new-system-from)
+          updated-events (assoc (vec events) idx updated-event)]
+      (swap! state assoc :events updated-events)
+      (render-canvas! canvas-el))))
+
+(defn on-mouse-up [_canvas-el _e]
+  (reset! drag-state {:dragging nil :offset-x 0 :offset-y 0}))
+
 (defn canvas-lifecycle [node lifecycle _data]
   (case lifecycle
-    "mount" (let [resize-handler #(render-canvas! node)]
+    "mount" (let [resize-handler #(render-canvas! node)
+                  mousedown-handler #(on-mouse-down node %)
+                  mousemove-handler #(on-mouse-move node %)
+                  mouseup-handler #(on-mouse-up node %)]
               (.addEventListener js/window "resize" resize-handler)
+              (.addEventListener node "mousedown" mousedown-handler)
+              (.addEventListener js/window "mousemove" mousemove-handler)
+              (.addEventListener js/window "mouseup" mouseup-handler)
               (render-canvas! node)
-              ;; Return resize handler so we can remove it on unmount
-              resize-handler)
+              {:resize resize-handler
+               :mousedown mousedown-handler
+               :mousemove mousemove-handler
+               :mouseup mouseup-handler})
     "update" (render-canvas! node)
     "unmount" nil
     nil))
