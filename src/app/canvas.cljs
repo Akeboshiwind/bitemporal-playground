@@ -4,7 +4,7 @@
 
 (def config
   {:padding 50
-   :cell-size 50
+   :grid-divisions 10
    :grid-color "#e5e7eb"
    :axis-color "#374151"
    :axis-label-color "#6b7280"})
@@ -15,24 +15,23 @@
   (set! (.-fillStyle ctx) "#ffffff")
   (.fillRect ctx 0 0 width height))
 
-(defn draw-grid! [ctx width height padding cell-size]
+(defn draw-grid! [ctx width height padding divisions]
   (let [draw-width (- width (* 2 padding))
         draw-height (- height (* 2 padding))
-        ;; Calculate how many cells fit in each direction
-        cols (js/Math.floor (/ draw-width cell-size))
-        rows (js/Math.floor (/ draw-height cell-size))]
+        step-x (/ draw-width divisions)
+        step-y (/ draw-height divisions)]
     (set! (.-strokeStyle ctx) (:grid-color config))
     (set! (.-lineWidth ctx) 1)
     ;; Vertical lines
-    (doseq [i (range (inc cols))]
-      (let [x (+ padding (* i cell-size))]
+    (doseq [i (range (inc divisions))]
+      (let [x (+ padding (* i step-x))]
         (.beginPath ctx)
         (.moveTo ctx x padding)
         (.lineTo ctx x (- height padding))
         (.stroke ctx)))
     ;; Horizontal lines
-    (doseq [i (range (inc rows))]
-      (let [y (- height padding (* i cell-size))]
+    (doseq [i (range (inc divisions))]
+      (let [y (- height padding (* i step-y))]
         (.beginPath ctx)
         (.moveTo ctx padding y)
         (.lineTo ctx (- width padding) y)
@@ -129,10 +128,10 @@
           width (.-width canvas)
           height (.-height canvas)
           padding (:padding config)
-          cell-size (:cell-size config)]
+          divisions (:grid-divisions config)]
       ;; Pass 1: Background
       (clear-canvas! ctx width height)
-      (draw-grid! ctx width height padding cell-size)
+      (draw-grid! ctx width height padding divisions)
       (draw-axes! ctx width height padding)
       (draw-axis-labels! ctx width height padding)
       ;; Pass 2: Events (use 0..1 normalized coordinates)
