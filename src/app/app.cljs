@@ -22,7 +22,8 @@
 
 (def state (atom {:presence-count 0
                   :events sample-events
-                  :canvas-ref nil}))
+                  :canvas-ref nil
+                  :show-grid false}))
 
 ;; Drag state (separate atom to avoid re-renders during drag)
 (def drag-state (atom {:dragging nil      ; index of event being dragged
@@ -40,7 +41,9 @@
     (when (and (pos? width) (pos? height))
       (set! (.-width canvas-el) width)
       (set! (.-height canvas-el) height)
-      (canvas/render-canvas! canvas-el (:events @state)))))
+      (canvas/render-canvas! canvas-el
+                             (:events @state)
+                             {:show-grid (:show-grid @state)}))))
 
 ;; >> Drag and Drop
 
@@ -152,9 +155,18 @@
       [:span {:class "w-2 h-2 bg-green-500 rounded-full"}]
       (str presence-count " " (if (= presence-count 1) "person" "people") " online")]]))
 
+(defn toggle-grid! []
+  (swap! state update :show-grid not))
+
 (defn side-panel []
   [:div {:class "w-64 bg-gray-800 text-white p-4 flex flex-col"}
-   [:h1 {:class "text-xl font-bold"} "Bitemporal Visualizer"]])
+   [:h1 {:class "text-xl font-bold mb-6"} "Bitemporal Visualizer"]
+   [:label {:class "flex items-center gap-2 cursor-pointer"}
+    [:input {:type "checkbox"
+             :checked (:show-grid @state)
+             :on-change toggle-grid!
+             :class "w-4 h-4"}]
+    [:span "Grid"]]])
 
 (defn main-canvas []
   [:div {:class "flex-1 bg-gray-100 p-4"}

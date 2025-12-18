@@ -6,6 +6,7 @@
   {:padding 50
    :grid-divisions 10
    :grid-color "#e5e7eb"
+   :foreground-grid-color "rgba(0, 0, 0, 0.3)"
    :axis-color "#374151"
    :axis-label-color "#6b7280"})
 
@@ -15,12 +16,12 @@
   (set! (.-fillStyle ctx) "#ffffff")
   (.fillRect ctx 0 0 width height))
 
-(defn draw-grid! [ctx width height padding divisions]
+(defn draw-grid! [ctx width height padding divisions color]
   (let [draw-width (- width (* 2 padding))
         draw-height (- height (* 2 padding))
         step-x (/ draw-width divisions)
         step-y (/ draw-height divisions)]
-    (set! (.-strokeStyle ctx) (:grid-color config))
+    (set! (.-strokeStyle ctx) color)
     (set! (.-lineWidth ctx) 1)
     ;; Vertical lines
     (doseq [i (range (inc divisions))]
@@ -122,19 +123,21 @@
 
 ;; >> Main Render Function
 
-(defn render-canvas! [canvas events]
+(defn render-canvas! [canvas events opts]
   (when canvas
     (let [ctx (.getContext canvas "2d")
           width (.-width canvas)
           height (.-height canvas)
           padding (:padding config)
-          divisions (:grid-divisions config)]
+          divisions (:grid-divisions config)
+          show-grid (get opts :show-grid false)]
       ;; Pass 1: Background
       (clear-canvas! ctx width height)
-      (draw-grid! ctx width height padding divisions)
+      (draw-grid! ctx width height padding divisions (:grid-color config))
       (draw-axes! ctx width height padding)
       (draw-axis-labels! ctx width height padding)
       ;; Pass 2: Events (use 0..1 normalized coordinates)
       (draw-events! ctx events width height padding)
-      ;; Pass 3: Foreground (placeholder for future overlays)
-      )))
+      ;; Pass 3: Foreground
+      (when show-grid
+        (draw-grid! ctx width height padding divisions (:foreground-grid-color config))))))
