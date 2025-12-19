@@ -1000,16 +1000,32 @@
        [:span "Grid"]]
       [:label {:class "flex items-center gap-2 cursor-pointer"}
        [:input {:type "checkbox"
-                :checked (:snap-to-grid @state)
-                :on-change toggle-snap-to-grid!
-                :class "w-4 h-4"}]
-       [:span "Snap to grid"]]
-      [:label {:class "flex items-center gap-2 cursor-pointer"}
-       [:input {:type "checkbox"
                 :checked (:auto-select @state)
                 :on-change toggle-auto-select!
                 :class "w-4 h-4"}]
        [:span "Auto-select after draw"]]]
+
+     ;; Divider
+     [:div {:class "h-px bg-gray-600 my-4"}]
+
+     ;; Synced Settings section
+     [:div {:class "mb-4"}
+      [:div {:class "text-xs text-gray-400 mb-2"} "Room Settings"]
+      [:div {:class "flex flex-col gap-2"}
+       [:label {:class "flex items-center gap-2 cursor-pointer"}
+        [:input {:type "checkbox"
+                 :checked (:snap-to-grid @state)
+                 :on-change toggle-snap-to-grid!
+                 :class "w-4 h-4"}]
+        [:span "Snap to grid"]
+        ;; Sync icon
+        [:svg {:class "w-3.5 h-3.5 text-gray-400"
+               :viewBox "0 0 24 24"
+               :fill "none"
+               :stroke "currentColor"
+               :stroke-width "2"
+               :title "Synced to room"}
+         [:path {:d "M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"}]]]]]
 
      ;; Divider
      [:div {:class "h-px bg-gray-600 my-4"}]
@@ -1069,15 +1085,17 @@
                                  (swap! state assoc :room-count (count members))))))
 
 (defn broadcast-state! []
-  "Broadcast current events and points state to room"
+  "Broadcast current events, points, and synced settings to room"
   (when-not (:syncing @state)
     (let [room-code (:room-code @state)
           events (:events @state)
-          points (:points @state)]
+          points (:points @state)
+          snap-to-grid (:snap-to-grid @state)]
       (ably/publish! (room-channel-name room-code)
                      "state-sync"
                      #js {:events events
                           :points points
+                          :snapToGrid snap-to-grid
                           :from ably/client-id}))))
 
 (defn request-state! []
@@ -1098,11 +1116,14 @@
 
         "state-sync"
         (let [events (.-events data)
-              points (.-points data)]
+              points (.-points data)
+              snap-to-grid (.-snapToGrid data)]
           (swap! state assoc :syncing true)
           (swap! state assoc :events (vec events))
           (when points
             (swap! state assoc :points (vec points)))
+          (when (some? snap-to-grid)
+            (swap! state assoc :snap-to-grid snap-to-grid))
           (swap! state assoc :syncing false))
 
         nil))))
@@ -1133,7 +1154,8 @@
            (fn [_ _ old-state new-state]
              (when (and (not (:syncing new-state))
                         (or (not= (:events old-state) (:events new-state))
-                            (not= (:points old-state) (:points new-state))))
+                            (not= (:points old-state) (:points new-state))
+                            (not= (:snap-to-grid old-state) (:snap-to-grid new-state))))
                (broadcast-state!))))
 
 ;; >> Init
