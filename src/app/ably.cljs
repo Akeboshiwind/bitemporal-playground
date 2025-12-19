@@ -22,13 +22,11 @@
 (def Realtime (.-Realtime (.-default Ably)))
 
 (defn init! [api-key]
-  (println "Ably init!")
   (let [client (new Realtime #js {:key api-key
                                   :clientId client-id})]
     (.on (.-connection client)
          (fn [state-change]
            (let [status (.-current state-change)]
-             (println "Ably connection:" status)
              (swap! state assoc :connection-status status))))
     (swap! state assoc :ably client)
     client))
@@ -67,6 +65,4 @@
       (.catch #(println "Publish failed:" %))))
 
 (defn subscribe! [channel-name callback]
-  (.subscribe (channel channel-name)
-              (fn [msg]
-                (callback (.-data msg)))))
+  (.subscribe (channel channel-name) callback))

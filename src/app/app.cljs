@@ -7,8 +7,18 @@
 ;; >> Configuration
 
 (def ABLY_API_KEY "Vr1zhQ.IsKO2g:nY_BkeBtmxQxs0W_MYZNkx-34cZBzzNLOrrAARrygfQ")
-(def CHANNEL_NAME "presence-demo")
+(def GLOBAL_CHANNEL "global")
 (def STORAGE_KEY "bitemporal-visualizer")
+
+;; >> Room Code Generation
+
+(defn generate-room-code []
+  (let [chars "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" ; no I, O, 0, 1 to avoid confusion
+        len 6]
+    (apply str (repeatedly len #(nth chars (rand-int (count chars)))))))
+
+(defn room-channel-name [code]
+  (str "room:" code))
 
 ;; >> Sample Bitemporal Events
 
@@ -40,12 +50,15 @@
 
 (def initial-persisted (get-persisted-state))
 
-(def state (atom {:presence-count 0
-                  :events (:events initial-persisted)
+(def state (atom {:events (:events initial-persisted)
                   :canvas-ref nil
                   :show-grid (:show-grid initial-persisted)
                   :current-tool :select      ; :select or :rectangle
-                  :auto-select true}))       ; switch to select after drawing
+                  :auto-select true          ; switch to select after drawing
+                  :room-code (generate-room-code)
+                  :room-count 0              ; users in current room
+                  :global-count 0            ; total users online
+                  :syncing false}))          ; true when receiving remote state
 
 ;; Save to localStorage when events or settings change
 (add-watch state ::persist
@@ -472,11 +485,11 @@
          (str "Status: " status))])))
 
 (defn presence-indicator []
-  (let [{:keys [presence-count]} @state]
+  (let [{:keys [room-count global-count]} @state]
     [:div {:class "fixed bottom-4 right-4 px-3 py-2 bg-white rounded-lg shadow-md text-sm text-gray-600 z-10"}
      [:span {:class "inline-flex items-center gap-2"}
       [:span {:class "w-2 h-2 bg-green-500 rounded-full"}]
-      (str presence-count " " (if (= presence-count 1) "person" "people") " online")]]))
+      (str room-count "/" global-count " online")]]))
 
 (defn toggle-grid! []
   (swap! state update :show-grid not))
@@ -611,9 +624,34 @@
 (defn toggle-auto-select! []
   (swap! state update :auto-select not))
 
+(defn prompt-join-room! []
+  (when-let [code (js/prompt "Enter room code to join:")]
+    (let [code (-> code .trim .toUpperCase)]
+      (when (and (seq code) (>= (count code) 4))
+        (join-room! code)))))
+
+(defn copy-room-code! []
+  (let [code (:room-code @state)]
+    (-> (js/navigator.clipboard.writeText code)
+        (.then #(js/console.log "Copied room code:" code))
+        (.catch #(js/console.error "Failed to copy:" %)))))
+
 (defn side-panel []
   [:div {:class "w-64 bg-gray-800 text-white p-4 flex flex-col"}
-   [:h1 {:class "text-xl font-bold mb-6"} "Bitemporal Visualizer"]
+   [:h1 {:class "text-xl font-bold mb-4"} "Bitemporal Visualizer"]
+   ;; Room section
+   [:div {:class "mb-6 p-3 bg-gray-700 rounded-lg"}
+    [:div {:class "text-xs text-gray-400 mb-1"} "Room"]
+    [:div {:class "flex items-center gap-2"}
+     [:span {:class "font-mono text-lg tracking-wider"} (:room-code @state)]
+     [:button {:class "px-2 py-1 text-xs bg-gray-600 hover:bg-gray-500 rounded cursor-pointer"
+               :title "Copy room code"
+               :on-click copy-room-code!}
+      "Copy"]
+     [:button {:class "px-2 py-1 text-xs bg-blue-500 hover:bg-blue-600 rounded cursor-pointer"
+               :on-click prompt-join-room!}
+      "Join"]]]
+   ;; Options
    [:div {:class "flex flex-col gap-2"}
     [:label {:class "flex items-center gap-2 cursor-pointer"}
      [:input {:type "checkbox"
@@ -652,19 +690,90 @@
 (add-watch ably/state ::render-ably (fn [_ _ _ _] (render)))
 (add-watch context-menu ::render-context-menu (fn [_ _ _ _] (render)))
 
-;; >> Presence
+;; >> Presence & Room Management
 
-(defn update-presence-count! []
-  (ably/get-presence-members CHANNEL_NAME
+(defn update-global-presence-count! []
+  (ably/get-presence-members GLOBAL_CHANNEL
                              (fn [members]
-                               (swap! state assoc :presence-count (count members)))))
+                               (swap! state assoc :global-count (count members)))))
+
+(defn update-room-presence-count! []
+  (let [room-code (:room-code @state)]
+    (ably/get-presence-members (room-channel-name room-code)
+                               (fn [members]
+                                 (swap! state assoc :room-count (count members))))))
+
+(defn broadcast-state! []
+  "Broadcast current events state to room"
+  (when-not (:syncing @state)
+    (let [room-code (:room-code @state)
+          events (:events @state)]
+      (ably/publish! (room-channel-name room-code)
+                     "state-sync"
+                     #js {:events events
+                          :from ably/client-id}))))
+
+(defn request-state! []
+  "Request current state from room members"
+  (let [room-code (:room-code @state)]
+    (ably/publish! (room-channel-name room-code)
+                   "state-request"
+                   #js {:from ably/client-id})))
+
+(defn handle-room-message [msg]
+  (let [event (.-name msg)
+        data (.-data msg)
+        from (.-from data)]
+    (when (not= from ably/client-id) ; ignore own messages
+      (case event
+        "state-request"
+        (broadcast-state!)
+
+        "state-sync"
+        (let [events (.-events data)]
+          (swap! state assoc :syncing true)
+          (swap! state assoc :events (vec events))
+          (swap! state assoc :syncing false))
+
+        nil))))
+
+(defn join-room! [code]
+  "Join a room by code"
+  (let [old-code (:room-code @state)
+        old-channel (room-channel-name old-code)
+        new-channel (room-channel-name code)]
+    ;; Leave old room
+    (when old-code
+      (-> (.-presence (ably/channel old-channel))
+          (.leave)))
+    ;; Update room code
+    (swap! state assoc :room-code code :room-count 0)
+    ;; Join new room
+    (ably/enter-presence! new-channel)
+    (ably/on-presence-change! new-channel update-room-presence-count!)
+    ;; Subscribe to room messages
+    (ably/subscribe! new-channel handle-room-message)
+    ;; Request current state from room
+    (js/setTimeout request-state! 500))) ; small delay to let presence sync
+
+;; >> State Sync
+
+;; Broadcast state changes to room (but not when syncing from remote)
+(add-watch state ::sync-to-room
+           (fn [_ _ old-state new-state]
+             (when (and (not (:syncing new-state))
+                        (not= (:events old-state) (:events new-state)))
+               (broadcast-state!))))
 
 ;; >> Init
 
 (defn init! []
   (render)
   (ably/init! ABLY_API_KEY)
-  (ably/enter-presence! CHANNEL_NAME)
-  (ably/on-presence-change! CHANNEL_NAME update-presence-count!))
+  ;; Global presence
+  (ably/enter-presence! GLOBAL_CHANNEL)
+  (ably/on-presence-change! GLOBAL_CHANNEL update-global-presence-count!)
+  ;; Join initial room
+  (join-room! (:room-code @state)))
 
 (init!)
