@@ -14,7 +14,9 @@
    :selection-fill "rgba(59, 130, 246, 0.2)"
    :selection-stroke "rgba(59, 130, 246, 0.8)"
    :selected-stroke "rgba(59, 130, 246, 1)"
-   :selected-stroke-width 2})
+   :selected-stroke-width 2
+   :point-radius 8
+   :point-stroke-width 2})
 
 ;; >> Drawing Helpers
 
@@ -140,6 +142,35 @@
     (doseq [[idx event] sorted-events]
       (draw-event! ctx event width height padding (contains? selected idx)))))
 
+;; >> Point Rendering
+
+(defn draw-point! [ctx point width height padding selected?]
+  (let [{:keys [x y color]} point
+        draw-width (- width (* 2 padding))
+        draw-height (- height (* 2 padding))
+        radius (:point-radius config)
+        ;; Map 0..1 coordinates to pixel coordinates
+        px (+ padding (* x draw-width))
+        py (- height padding (* y draw-height))]
+    ;; Fill the circle
+    (set! (.-fillStyle ctx) (rgb->css color))
+    (.beginPath ctx)
+    (.arc ctx px py radius 0 (* 2 js/Math.PI))
+    (.fill ctx)
+    ;; Stroke the circle
+    (if selected?
+      (do
+        (set! (.-strokeStyle ctx) (:selected-stroke config))
+        (set! (.-lineWidth ctx) (:selected-stroke-width config)))
+      (do
+        (set! (.-strokeStyle ctx) "#000000")
+        (set! (.-lineWidth ctx) 1)))
+    (.stroke ctx)))
+
+(defn draw-points! [ctx points width height padding selected-points]
+  (doseq [[idx point] (map-indexed vector points)]
+    (draw-point! ctx point width height padding (contains? selected-points idx))))
+
 (defn draw-selection-box! [ctx width height padding selection-box]
   (when selection-box
     (let [{:keys [start end]} selection-box
@@ -174,7 +205,9 @@
           divisions (:grid-divisions config)
           show-grid (get opts :show-grid false)
           selection-box (get opts :selection-box)
-          selected (or (get opts :selected) #{})]
+          selected (or (get opts :selected) #{})
+          points (or (get opts :points) [])
+          selected-points (or (get opts :selected-points) #{})]
       ;; Pass 1: Background
       (clear-canvas! ctx width height)
       (draw-grid! ctx width height padding divisions (:grid-color config))
@@ -182,8 +215,10 @@
       (draw-axis-labels! ctx width height padding)
       ;; Pass 2: Events (use 0..1 normalized coordinates)
       (draw-events! ctx events width height padding selected)
-      ;; Pass 3: Foreground
+      ;; Pass 3: Points (always on top of events)
+      (draw-points! ctx points width height padding selected-points)
+      ;; Pass 4: Foreground grid
       (when show-grid
         (draw-grid! ctx width height padding divisions (:foreground-grid-color config)))
-      ;; Pass 4: Selection box (drawn on top)
+      ;; Pass 5: Selection box (drawn on top)
       (draw-selection-box! ctx width height padding selection-box))))

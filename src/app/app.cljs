@@ -44,6 +44,7 @@
 (defn get-persisted-state []
   (let [stored (load-from-storage)]
     {:events (or (:events stored) default-events)
+     :points (or (:points stored) [])
      :show-grid (get stored :show-grid (:show-grid default-settings))}))
 
 ;; >> State
@@ -51,53 +52,61 @@
 (def initial-persisted (get-persisted-state))
 
 (def state (atom {:events (:events initial-persisted)
+                  :points (:points initial-persisted)
                   :canvas-ref nil
                   :show-grid (:show-grid initial-persisted)
-                  :current-tool :select      ; :select or :rectangle
+                  :current-tool :select      ; :select, :rectangle, or :point
                   :auto-select true          ; switch to select after drawing
                   :room-code (generate-room-code)
                   :room-count 0              ; users in current room
                   :global-count 0            ; total users online
                   :syncing false}))          ; true when receiving remote state
 
-;; Save to localStorage when events or settings change
+;; Save to localStorage when events, points, or settings change
 (add-watch state ::persist
            (fn [_ _ old-state new-state]
              (when (or (not= (:events old-state) (:events new-state))
+                       (not= (:points old-state) (:points new-state))
                        (not= (:show-grid old-state) (:show-grid new-state)))
                (save-to-storage! {:events (:events new-state)
+                                  :points (:points new-state)
                                   :show-grid (:show-grid new-state)}))))
 
 ;; Drag state (separate atom to avoid re-renders during drag)
-(def drag-state (atom {:dragging nil       ; index of event being dragged
-                       :mode nil           ; :move, :move-multi, :resize, or :select
-                       :offset-x 0         ; offset from click to event left edge
-                       :offset-y 0         ; offset from click to event bottom
-                       :multi-offsets nil  ; map of idx -> {offset-x, offset-y} for multi-drag
-                       :select-start nil   ; {x, y} start of selection box
-                       :select-end nil     ; {x, y} end of selection box
-                       :selected #{}}))    ; set of selected event indices
+(def drag-state (atom {:dragging nil         ; index of event being dragged
+                       :dragging-point nil   ; index of point being dragged
+                       :mode nil             ; :move, :move-multi, :resize, :select, :move-point, :move-points
+                       :offset-x 0           ; offset from click to event left edge
+                       :offset-y 0           ; offset from click to event bottom
+                       :multi-offsets nil    ; map of idx -> {offset-x, offset-y} for multi-drag
+                       :point-offsets nil    ; map of idx -> {offset-x, offset-y} for point drag
+                       :select-start nil     ; {x, y} start of selection box
+                       :select-end nil       ; {x, y} end of selection box
+                       :selected #{}         ; set of selected event indices
+                       :selected-points #{}})) ; set of selected point indices
 
 ;; Context menu state
 (def context-menu (atom {:open false
-                         :x 0              ; screen x position
-                         :y 0              ; screen y position
-                         :target-indices #{}})) ; event indices to modify
+                         :x 0                    ; screen x position
+                         :y 0                    ; screen y position
+                         :target-indices #{}     ; event indices to modify
+                         :target-point-indices #{}})) ; point indices to modify
 
 (defn close-context-menu! []
-  (reset! context-menu {:open false :x 0 :y 0 :target-indices #{}}))
+  (reset! context-menu {:open false :x 0 :y 0 :target-indices #{} :target-point-indices #{}}))
 
 ;; >> Canvas Management
 
 (def PADDING 60)        ;; Must match canvas.cljs config
 (def HANDLE_WIDTH 8)    ;; Must match canvas.cljs config
+(def POINT_RADIUS 8)    ;; Must match canvas.cljs config
 (def MIN_DURATION 0.05) ;; Minimum event duration in normalized units
 
 (defn render-canvas! [canvas-el]
   (let [container (.-parentElement canvas-el)
         width (.-clientWidth container)
         height (.-clientHeight container)
-        {:keys [mode select-start select-end selected]} @drag-state]
+        {:keys [mode select-start select-end selected selected-points]} @drag-state]
     (when (and (pos? width) (pos? height))
       (set! (.-width canvas-el) width)
       (set! (.-height canvas-el) height)
@@ -106,7 +115,9 @@
                              {:show-grid (:show-grid @state)
                               :selection-box (when (or (= mode :select) (= mode :draw))
                                                {:start select-start :end select-end})
-                              :selected selected}))))
+                              :selected selected
+                              :points (:points @state)
+                              :selected-points selected-points}))))
 
 ;; >> Drag and Drop
 
@@ -148,84 +159,158 @@
                                         (>= norm-x (- effective-valid-to handle-norm-width)))})))
                  sorted-indices))))
 
+(defn point-hit-test [canvas-el points norm-x norm-y]
+  "Find which point (if any) is at the click location. Returns {:index idx} or nil.
+   Tests in reverse order (later points are drawn on top)."
+  (let [width (.-width canvas-el)
+        height (.-height canvas-el)
+        draw-width (- width (* 2 PADDING))
+        draw-height (- height (* 2 PADDING))
+        ;; Convert radius to normalized coordinates (average of x and y scale)
+        norm-radius-x (/ POINT_RADIUS draw-width)
+        norm-radius-y (/ POINT_RADIUS draw-height)]
+    (first (keep (fn [idx]
+                   (let [point (nth points idx)
+                         {:keys [x y]} point
+                         dx (- norm-x x)
+                         dy (- norm-y y)
+                         ;; Use elliptical distance to handle non-square aspect ratio
+                         dist-sq (+ (/ (* dx dx) (* norm-radius-x norm-radius-x))
+                                    (/ (* dy dy) (* norm-radius-y norm-radius-y)))]
+                     (when (<= dist-sq 1)
+                       {:index idx})))
+                 (reverse (range (count points)))))))
+
 (defn on-mouse-down [canvas-el e]
   ;; Close context menu on any click
   (when (:open @context-menu)
     (close-context-menu!))
-  (let [{:keys [x y]} (canvas->normalized canvas-el (.-clientX e) (.-clientY e))
-        events (:events @state)
-        currently-selected (:selected @drag-state)
-        current-tool (:current-tool @state)]
-    ;; Rectangle tool always draws, regardless of what's underneath
-    (if (= current-tool :rectangle)
-      (reset! drag-state {:dragging nil
-                          :mode :draw
-                          :offset-x 0
-                          :offset-y 0
-                          :select-start {:x x :y y}
-                          :select-end {:x x :y y}
-                          :selected #{}})
-      ;; Select tool - check for hits
-      (let [hit (hit-test canvas-el events x y)]
-        (if hit
-          (let [{:keys [index on-handle]} hit
-                event (nth events index)
-                {:keys [_valid_from _valid_to _system_from]} event]
-            (if on-handle
-              ;; Check if resizing a selected event - if so, resize all selected
-              (if (and (contains? currently-selected index) (> (count currently-selected) 1))
-                ;; Multi-resize: store original positions for all selected events
-                (let [selected-events (map #(nth events %) currently-selected)
-                      min-valid-from (apply min (map :_valid_from selected-events))
-                      max-valid-to (apply max (map :_valid_to selected-events))
-                      original-span (- max-valid-to min-valid-from)
-                      original-positions (into {}
-                                           (map (fn [idx]
-                                                  (let [evt (nth events idx)]
-                                                    [idx {:_valid_from (:_valid_from evt)
-                                                          :_valid_to (:_valid_to evt)}]))
-                                                currently-selected))]
-                  (swap! drag-state assoc
-                         :dragging index
-                         :mode :resize-multi
-                         :offset-x (- _valid_to x)
-                         :anchor-point min-valid-from
-                         :original-span original-span
-                         :original-positions original-positions))
-                ;; Single resize
-                (swap! drag-state assoc
-                       :dragging index
-                       :mode :resize
-                       :offset-x (- _valid_to x)
-                       :offset-y 0))
-              ;; Check if clicking on a selected event - if so, drag all selected
-              (if (and (contains? currently-selected index) (> (count currently-selected) 1))
-                ;; Multi-drag: store offsets for all selected events
+  ;; Only handle left-clicks (button 0) for drag operations
+  (when (zero? (.-button e))
+    (let [{:keys [x y]} (canvas->normalized canvas-el (.-clientX e) (.-clientY e))
+          events (:events @state)
+          points (:points @state)
+          currently-selected (:selected @drag-state)
+          currently-selected-points (:selected-points @drag-state)
+          current-tool (:current-tool @state)]
+      (cond
+        ;; Rectangle tool always draws, regardless of what's underneath
+        (= current-tool :rectangle)
+        (reset! drag-state {:dragging nil
+                            :dragging-point nil
+                            :mode :draw
+                            :offset-x 0
+                            :offset-y 0
+                            :select-start {:x x :y y}
+                            :select-end {:x x :y y}
+                            :selected #{}
+                            :selected-points #{}})
+
+        ;; Point tool - place a point
+        (= current-tool :point)
+        (do
+          (swap! state update :points conj {:x x :y y :color default-new-event-color})
+          ;; Switch back to select tool if auto-select is enabled
+          (when (:auto-select @state)
+            (swap! state assoc :current-tool :select))
+          (render-canvas! canvas-el))
+
+        ;; Select tool - check for hits (points first since they're on top)
+        :else
+        (let [point-hit (point-hit-test canvas-el points x y)
+              event-hit (hit-test canvas-el events x y)]
+          (cond
+            ;; Hit a point
+            point-hit
+            (let [{:keys [index]} point-hit
+                  point (nth points index)]
+              ;; Check if clicking on a selected point - if so, drag all selected points
+              (if (and (contains? currently-selected-points index) (> (count currently-selected-points) 1))
+                ;; Multi-drag points: store offsets for all selected points
                 (let [offsets (into {}
                                 (map (fn [idx]
-                                       (let [evt (nth events idx)]
-                                         [idx {:offset-x (- x (:_valid_from evt))
-                                               :offset-y (- (:_system_from evt) y)}]))
-                                     currently-selected))]
+                                       (let [p (nth points idx)]
+                                         [idx {:offset-x (- x (:x p))
+                                               :offset-y (- y (:y p))}]))
+                                     currently-selected-points))]
+                  (swap! drag-state assoc
+                         :dragging-point index
+                         :mode :move-points
+                         :point-offsets offsets))
+                ;; Single point drag - also select the clicked point
+                (swap! drag-state assoc
+                       :dragging-point index
+                       :mode :move-point
+                       :offset-x (- x (:x point))
+                       :offset-y (- y (:y point))
+                       :selected #{}
+                       :selected-points #{index})))
+
+            ;; Hit an event
+            event-hit
+            (let [{:keys [index on-handle]} event-hit
+                  event (nth events index)
+                  {:keys [_valid_from _valid_to _system_from]} event]
+              (if on-handle
+                ;; Check if resizing a selected event - if so, resize all selected
+                (if (and (contains? currently-selected index) (> (count currently-selected) 1))
+                  ;; Multi-resize: store original positions for all selected events
+                  (let [selected-events (map #(nth events %) currently-selected)
+                        min-valid-from (apply min (map :_valid_from selected-events))
+                        max-valid-to (apply max (map :_valid_to selected-events))
+                        original-span (- max-valid-to min-valid-from)
+                        original-positions (into {}
+                                             (map (fn [idx]
+                                                    (let [evt (nth events idx)]
+                                                      [idx {:_valid_from (:_valid_from evt)
+                                                            :_valid_to (:_valid_to evt)}]))
+                                                  currently-selected))]
+                    (swap! drag-state assoc
+                           :dragging index
+                           :mode :resize-multi
+                           :offset-x (- _valid_to x)
+                           :anchor-point min-valid-from
+                           :original-span original-span
+                           :original-positions original-positions))
+                  ;; Single resize
                   (swap! drag-state assoc
                          :dragging index
-                         :mode :move-multi
-                         :multi-offsets offsets))
-                ;; Single drag - also select the clicked event
-                (swap! drag-state assoc
-                       :dragging index
-                       :mode :move
-                       :offset-x (- x _valid_from)
-                       :offset-y (- _system_from y)
-                       :selected #{index}))))
-          ;; Clicked on empty space - start selection
-          (reset! drag-state {:dragging nil
-                              :mode :select
-                              :offset-x 0
-                              :offset-y 0
-                              :select-start {:x x :y y}
-                              :select-end {:x x :y y}
-                              :selected #{}}))))))
+                         :mode :resize
+                         :offset-x (- _valid_to x)
+                         :offset-y 0))
+                ;; Check if clicking on a selected event - if so, drag all selected
+                (if (and (contains? currently-selected index) (> (count currently-selected) 1))
+                  ;; Multi-drag: store offsets for all selected events
+                  (let [offsets (into {}
+                                  (map (fn [idx]
+                                         (let [evt (nth events idx)]
+                                           [idx {:offset-x (- x (:_valid_from evt))
+                                                 :offset-y (- (:_system_from evt) y)}]))
+                                       currently-selected))]
+                    (swap! drag-state assoc
+                           :dragging index
+                           :mode :move-multi
+                           :multi-offsets offsets))
+                  ;; Single drag - also select the clicked event
+                  (swap! drag-state assoc
+                         :dragging index
+                         :mode :move
+                         :offset-x (- x _valid_from)
+                         :offset-y (- _system_from y)
+                         :selected #{index}
+                         :selected-points #{}))))
+
+            ;; Clicked on empty space - start selection
+            :else
+            (reset! drag-state {:dragging nil
+                                :dragging-point nil
+                                :mode :select
+                                :offset-x 0
+                                :offset-y 0
+                                :select-start {:x x :y y}
+                                :select-end {:x x :y y}
+                                :selected #{}
+                                :selected-points #{}})))))))
 
 (defn events-in-selection [events select-start select-end]
   "Find indices of events that intersect with the selection box"
@@ -247,29 +332,45 @@
                 idx)))
           events))))
 
+(defn points-in-selection [points select-start select-end]
+  "Find indices of points that are inside the selection box"
+  (let [min-x (min (:x select-start) (:x select-end))
+        max-x (max (:x select-start) (:x select-end))
+        min-y (min (:y select-start) (:y select-end))
+        max-y (max (:y select-start) (:y select-end))]
+    (set (keep-indexed
+          (fn [idx point]
+            (let [{:keys [x y]} point]
+              (when (and (>= x min-x) (<= x max-x)
+                         (>= y min-y) (<= y max-y))
+                idx)))
+          points))))
+
 (defn on-mouse-move [canvas-el e]
   (let [{:keys [x y]} (canvas->normalized canvas-el (.-clientX e) (.-clientY e))
-        {:keys [dragging mode offset-x offset-y select-start multi-offsets selected]} @drag-state]
+        {:keys [dragging dragging-point mode offset-x offset-y select-start multi-offsets point-offsets selected]} @drag-state]
     ;; Update cursor based on mode and what we're hovering over
     (let [current-tool (:current-tool @state)]
       (cond
-        ;; Rectangle tool always shows crosshair
-        (= current-tool :rectangle)
+        ;; Rectangle or point tool always shows crosshair
+        (or (= current-tool :rectangle) (= current-tool :point))
         (set! (.-cursor (.-style canvas-el)) "crosshair")
 
         (= mode :select)
         (set! (.-cursor (.-style canvas-el)) "crosshair")
 
-        dragging
+        (or dragging dragging-point)
         (set! (.-cursor (.-style canvas-el))
               (if (or (= mode :resize) (= mode :resize-multi)) "ew-resize" "move"))
 
         :else
-        (let [hit (hit-test canvas-el (:events @state) x y)]
+        (let [point-hit (point-hit-test canvas-el (:points @state) x y)
+              event-hit (hit-test canvas-el (:events @state) x y)]
           (set! (.-cursor (.-style canvas-el))
                 (cond
-                  (and hit (:on-handle hit)) "ew-resize"
-                  hit "move"
+                  point-hit "move"
+                  (and event-hit (:on-handle event-hit)) "ew-resize"
+                  event-hit "move"
                   :else "crosshair")))))
     ;; Handle different modes
     (cond
@@ -282,10 +383,44 @@
       ;; Selection mode
       (= mode :select)
       (let [events (:events @state)
-            selected (events-in-selection events select-start {:x x :y y})]
+            points (:points @state)
+            selected-events (events-in-selection events select-start {:x x :y y})
+            selected-pts (points-in-selection points select-start {:x x :y y})]
         (swap! drag-state assoc
                :select-end {:x x :y y}
-               :selected selected)
+               :selected selected-events
+               :selected-points selected-pts)
+        (render-canvas! canvas-el))
+
+      ;; Single point move mode
+      (and dragging-point (= mode :move-point))
+      (let [points (vec (:points @state))
+            point (nth points dragging-point)
+            new-x (- x offset-x)
+            new-y (- y offset-y)
+            new-x (max 0 (min 1 new-x))
+            new-y (max 0 (min 1 new-y))
+            updated-point (assoc point :x new-x :y new-y)
+            updated-points (assoc points dragging-point updated-point)]
+        (swap! state assoc :points updated-points)
+        (render-canvas! canvas-el))
+
+      ;; Multi-point move mode
+      (and dragging-point (= mode :move-points))
+      (let [points (vec (:points @state))
+            updated-points (reduce
+                            (fn [pts idx]
+                              (let [point (nth pts idx)
+                                    {:keys [offset-x offset-y]} (get point-offsets idx)
+                                    new-x (- x offset-x)
+                                    new-y (- y offset-y)
+                                    new-x (max 0 (min 1 new-x))
+                                    new-y (max 0 (min 1 new-y))
+                                    updated-point (assoc point :x new-x :y new-y)]
+                                (assoc pts idx updated-point)))
+                            points
+                            (keys point-offsets))]
+        (swap! state assoc :points updated-points)
         (render-canvas! canvas-el))
 
       ;; Single resize mode
@@ -398,7 +533,7 @@
     (swap! state update :events conj new-event)))
 
 (defn on-mouse-up [canvas-el _e]
-  (let [{:keys [mode select-start select-end selected]} @drag-state]
+  (let [{:keys [mode select-start select-end selected selected-points]} @drag-state]
     ;; If in draw mode with valid drag, create new event
     (when (and (= mode :draw) select-start select-end)
       (let [width (js/Math.abs (- (:x select-end) (:x select-start)))
@@ -410,38 +545,67 @@
           (when (:auto-select @state)
             (swap! state assoc :current-tool :select)))))
     (reset! drag-state {:dragging nil
+                        :dragging-point nil
                         :mode nil
                         :offset-x 0
                         :offset-y 0
                         :select-start nil
                         :select-end nil
-                        :selected selected})
+                        :selected selected
+                        :selected-points selected-points})
     (render-canvas! canvas-el)))
 
 (defn on-context-menu [canvas-el e]
   (.preventDefault e)
   (let [{:keys [x y]} (canvas->normalized canvas-el (.-clientX e) (.-clientY e))
         events (:events @state)
-        hit (hit-test canvas-el events x y)
-        currently-selected (:selected @drag-state)]
-    (when hit
-      (let [clicked-idx (:index hit)
-            ;; If clicked event is in selection, target all selected; otherwise just the clicked one
-            target-indices (if (contains? currently-selected clicked-idx)
-                             currently-selected
-                             #{clicked-idx})]
+        points (:points @state)
+        point-hit (point-hit-test canvas-el points x y)
+        event-hit (hit-test canvas-el events x y)
+        currently-selected (:selected @drag-state)
+        currently-selected-points (:selected-points @drag-state)]
+    (cond
+      ;; Right-clicked on a point
+      point-hit
+      (let [clicked-idx (:index point-hit)
+            ;; If clicked point is in selection, target all selected (events + points)
+            ;; otherwise just the clicked point
+            in-selection? (contains? currently-selected-points clicked-idx)]
         (reset! context-menu {:open true
                               :x (.-clientX e)
                               :y (.-clientY e)
-                              :target-indices target-indices})))))
+                              :target-indices (if in-selection? currently-selected #{})
+                              :target-point-indices (if in-selection?
+                                                      currently-selected-points
+                                                      #{clicked-idx})}))
+
+      ;; Right-clicked on an event
+      event-hit
+      (let [clicked-idx (:index event-hit)
+            ;; If clicked event is in selection, target all selected (events + points)
+            ;; otherwise just the clicked event
+            in-selection? (contains? currently-selected clicked-idx)]
+        (reset! context-menu {:open true
+                              :x (.-clientX e)
+                              :y (.-clientY e)
+                              :target-indices (if in-selection?
+                                                currently-selected
+                                                #{clicked-idx})
+                              :target-point-indices (if in-selection?
+                                                      currently-selected-points
+                                                      #{})})))))
 
 (defn on-keydown [e]
   (let [key (.-key e)
-        selected (:selected @drag-state)]
+        selected (:selected @drag-state)
+        selected-points (:selected-points @drag-state)]
     (when (and (or (= key "Delete") (= key "Backspace"))
-               (seq selected))
+               (or (seq selected) (seq selected-points)))
       (.preventDefault e)
-      (delete-events! selected))))
+      (when (seq selected)
+        (delete-events! selected))
+      (when (seq selected-points)
+        (delete-points! selected-points)))))
 
 (defn canvas-lifecycle [node lifecycle _data]
   (case lifecycle
@@ -529,6 +693,16 @@
     (swap! state assoc :events updated-events))
   (close-context-menu!))
 
+(defn set-point-colors! [indices color]
+  (let [points (vec (:points @state))
+        updated-points (reduce
+                        (fn [pts idx]
+                          (update pts idx assoc :color color))
+                        points
+                        indices)]
+    (swap! state assoc :points updated-points))
+  (close-context-menu!))
+
 (defn toggle-events-open! [indices make-open?]
   (let [events (vec (:events @state))
         updated-events (reduce
@@ -558,11 +732,55 @@
       ;; Then update events (triggers re-render with cleared selection)
       (swap! state assoc :events updated-events))))
 
+(defn delete-points! [indices]
+  (when (seq indices)
+    (let [points (:points @state)
+          indices-set (set indices)
+          updated-points (vec (keep-indexed
+                                (fn [idx point]
+                                  (when-not (contains? indices-set idx)
+                                    point))
+                                points))]
+      ;; Clear selection first since indices become invalid
+      (swap! drag-state assoc :selected-points #{})
+      ;; Then update points (triggers re-render with cleared selection)
+      (swap! state assoc :points updated-points))))
+
+(defn set-all-colors! [event-indices point-indices color]
+  "Set color for both events and points, then close context menu"
+  (when (seq event-indices)
+    (let [events (vec (:events @state))
+          updated-events (reduce
+                          (fn [evts idx]
+                            (update evts idx assoc :color color))
+                          events
+                          event-indices)]
+      (swap! state assoc :events updated-events)))
+  (when (seq point-indices)
+    (let [points (vec (:points @state))
+          updated-points (reduce
+                          (fn [pts idx]
+                            (update pts idx assoc :color color))
+                          points
+                          point-indices)]
+      (swap! state assoc :points updated-points)))
+  (close-context-menu!))
+
+(defn delete-all-selected! [event-indices point-indices]
+  "Delete both events and points, then close context menu"
+  (when (seq event-indices)
+    (delete-events! event-indices))
+  (when (seq point-indices)
+    (delete-points! point-indices))
+  (close-context-menu!))
+
 (defn color-menu []
-  (let [{:keys [open x y target-indices]} @context-menu
+  (let [{:keys [open x y target-indices target-point-indices]} @context-menu
         events (:events @state)
-        ;; Check if all targeted events are open
-        all-open? (and (seq target-indices)
+        has-events? (seq target-indices)
+        has-points? (seq target-point-indices)
+        ;; Check if all targeted events are open (only show Open option when events are selected)
+        all-open? (and has-events?
                        (every? #(nil? (:_valid_to (nth events %))) target-indices))]
     (when open
       [:div {:class "fixed bg-white rounded-lg shadow-xl border border-gray-200 p-2 z-50"
@@ -574,25 +792,26 @@
           [:button {:key (rgb->css color)
                     :class "w-6 h-6 rounded border border-gray-300 hover:scale-110 transition-transform cursor-pointer"
                     :style {:background-color (rgb->css color)}
-                    :on-click #(set-event-colors! target-indices color)}])
+                    :on-click #(set-all-colors! target-indices target-point-indices color)}])
         [:input {:type "color"
                  :class "w-6 h-6 rounded cursor-pointer border-0 p-0"
-                 :on-change #(set-event-colors! target-indices (hex->rgb (.-value (.-target %))))}]]
-       ;; Separator
-       [:div {:class "h-px bg-gray-200 my-2"}]
-       ;; Open checkbox
-       [:label {:class "flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none px-1"}
-        [:input {:type "checkbox"
-                 :checked all-open?
-                 :on-change #(toggle-events-open! target-indices (not all-open?))
-                 :class "w-4 h-4 cursor-pointer"}]
-        "Open"]
+                 :on-change #(set-all-colors! target-indices target-point-indices (hex->rgb (.-value (.-target %))))}]]
+       ;; Open checkbox (only for events)
+       (when has-events?
+         [:div
+          ;; Separator
+          [:div {:class "h-px bg-gray-200 my-2"}]
+          [:label {:class "flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none px-1"}
+           [:input {:type "checkbox"
+                    :checked all-open?
+                    :on-change #(toggle-events-open! target-indices (not all-open?))
+                    :class "w-4 h-4 cursor-pointer"}]
+           "Open"]])
        ;; Separator
        [:div {:class "h-px bg-gray-200 my-2"}]
        ;; Delete button
        [:button {:class "w-full text-left text-sm text-red-600 hover:bg-red-50 px-1 py-1 rounded cursor-pointer"
-                 :on-click #(do (delete-events! target-indices)
-                                (close-context-menu!))}
+                 :on-click #(delete-all-selected! target-indices target-point-indices)}
         "Delete"]])))
 
 (defn set-tool! [tool]
@@ -619,7 +838,16 @@
                :title "Rectangle"
                :on-click #(set-tool! :rectangle)}
       [:svg {:width "16" :height "16" :viewBox "0 0 24 24" :fill "none" :stroke "currentColor" :stroke-width "2"}
-       [:rect {:x "3" :y "3" :width "18" :height "18" :rx "2"}]]]]))
+       [:rect {:x "3" :y "3" :width "18" :height "18" :rx "2"}]]]
+     ;; Point tool
+     [:button {:class (str "w-8 h-8 rounded flex items-center justify-center transition-colors "
+                           (if (= current-tool :point)
+                             "bg-blue-500 text-white"
+                             "hover:bg-gray-100 text-gray-600"))
+               :title "Point"
+               :on-click #(set-tool! :point)}
+      [:svg {:width "16" :height "16" :viewBox "0 0 24 24" :fill "none" :stroke "currentColor" :stroke-width "2"}
+       [:circle {:cx "12" :cy "12" :r "4"}]]]]))
 
 (defn toggle-auto-select! []
   (swap! state update :auto-select not))
@@ -704,13 +932,15 @@
                                  (swap! state assoc :room-count (count members))))))
 
 (defn broadcast-state! []
-  "Broadcast current events state to room"
+  "Broadcast current events and points state to room"
   (when-not (:syncing @state)
     (let [room-code (:room-code @state)
-          events (:events @state)]
+          events (:events @state)
+          points (:points @state)]
       (ably/publish! (room-channel-name room-code)
                      "state-sync"
                      #js {:events events
+                          :points points
                           :from ably/client-id}))))
 
 (defn request-state! []
@@ -730,9 +960,12 @@
         (broadcast-state!)
 
         "state-sync"
-        (let [events (.-events data)]
+        (let [events (.-events data)
+              points (.-points data)]
           (swap! state assoc :syncing true)
           (swap! state assoc :events (vec events))
+          (when points
+            (swap! state assoc :points (vec points)))
           (swap! state assoc :syncing false))
 
         nil))))
@@ -762,7 +995,8 @@
 (add-watch state ::sync-to-room
            (fn [_ _ old-state new-state]
              (when (and (not (:syncing new-state))
-                        (not= (:events old-state) (:events new-state)))
+                        (or (not= (:events old-state) (:events new-state))
+                            (not= (:points old-state) (:points new-state))))
                (broadcast-state!))))
 
 ;; >> Init
