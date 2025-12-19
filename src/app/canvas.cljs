@@ -92,6 +92,43 @@
   (.fillText ctx "System Time" 0 0)
   (.restore ctx))
 
+(defn draw-ticks! [ctx width height padding divisions]
+  (let [draw-width (- width (* 2 padding))
+        draw-height (- height (* 2 padding))
+        step-x (/ draw-width divisions)
+        step-y (/ draw-height divisions)
+        tick-length 6]
+    (set! (.-fillStyle ctx) (:axis-label-color config))
+    (set! (.-strokeStyle ctx) (:axis-color config))
+    (set! (.-lineWidth ctx) 1)
+    (set! (.-font ctx) "10px system-ui, sans-serif")
+    ;; X axis ticks (bottom)
+    (set! (.-textAlign ctx) "center")
+    (set! (.-textBaseline ctx) "top")
+    (doseq [i (range (inc divisions))]
+      (let [x (+ padding (* i step-x))
+            y (- height padding)]
+        ;; Tick mark
+        (.beginPath ctx)
+        (.moveTo ctx x y)
+        (.lineTo ctx x (+ y tick-length))
+        (.stroke ctx)
+        ;; Label
+        (.fillText ctx (str "t" i) x (+ y tick-length 2))))
+    ;; Y axis ticks (left)
+    (set! (.-textAlign ctx) "right")
+    (set! (.-textBaseline ctx) "middle")
+    (doseq [i (range (inc divisions))]
+      (let [x padding
+            y (- height padding (* i step-y))]
+        ;; Tick mark
+        (.beginPath ctx)
+        (.moveTo ctx x y)
+        (.lineTo ctx (- x tick-length) y)
+        (.stroke ctx)
+        ;; Label
+        (.fillText ctx (str "t" i) (- x tick-length 2) y)))))
+
 ;; >> Event Rendering
 
 (defn rgb->css [[r g b]]
@@ -204,6 +241,7 @@
           padding (:padding config)
           divisions (:grid-divisions config)
           show-grid (get opts :show-grid false)
+          show-ticks (get opts :show-ticks false)
           selection-box (get opts :selection-box)
           selected (or (get opts :selected) #{})
           points (or (get opts :points) [])
@@ -213,6 +251,8 @@
       (draw-grid! ctx width height padding divisions (:grid-color config))
       (draw-axes! ctx width height padding)
       (draw-axis-labels! ctx width height padding)
+      (when show-ticks
+        (draw-ticks! ctx width height padding divisions))
       ;; Pass 2: Events (use 0..1 normalized coordinates)
       (draw-events! ctx events width height padding selected)
       ;; Pass 3: Points (always on top of events)

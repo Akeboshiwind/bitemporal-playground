@@ -32,7 +32,8 @@
 
 (def default-settings
   {:show-grid false
-   :snap-to-grid false})
+   :snap-to-grid false
+   :show-ticks false})
 
 ;; >> LocalStorage
 
@@ -48,7 +49,8 @@
     {:events (or (:events stored) default-events)
      :points (or (:points stored) [])
      :show-grid (get stored :show-grid (:show-grid default-settings))
-     :snap-to-grid (get stored :snap-to-grid (:snap-to-grid default-settings))}))
+     :snap-to-grid (get stored :snap-to-grid (:snap-to-grid default-settings))
+     :show-ticks (get stored :show-ticks (:show-ticks default-settings))}))
 
 ;; >> Saved States Storage
 
@@ -68,6 +70,7 @@
                   :points (:points initial-persisted)
                   :show-grid (:show-grid initial-persisted)
                   :snap-to-grid (:snap-to-grid initial-persisted)
+                  :show-ticks (:show-ticks initial-persisted)
                   :current-tool :select      ; :select, :rectangle, or :point
                   :auto-select true          ; switch to select after drawing
                   :room-code (generate-room-code)
@@ -85,11 +88,13 @@
              (when (or (not= (:events old-state) (:events new-state))
                        (not= (:points old-state) (:points new-state))
                        (not= (:show-grid old-state) (:show-grid new-state))
-                       (not= (:snap-to-grid old-state) (:snap-to-grid new-state)))
+                       (not= (:snap-to-grid old-state) (:snap-to-grid new-state))
+                       (not= (:show-ticks old-state) (:show-ticks new-state)))
                (save-to-storage! {:events (:events new-state)
                                   :points (:points new-state)
                                   :show-grid (:show-grid new-state)
-                                  :snap-to-grid (:snap-to-grid new-state)}))))
+                                  :snap-to-grid (:snap-to-grid new-state)
+                                  :show-ticks (:show-ticks new-state)}))))
 
 ;; Save saved-states to localStorage when they change
 (add-watch state ::persist-saved-states
@@ -144,6 +149,7 @@
       (canvas/render-canvas! canvas-el
                              (:events @state)
                              {:show-grid (:show-grid @state)
+                              :show-ticks (:show-ticks @state)
                               :selection-box (when (or (= mode :select) (= mode :draw))
                                                {:start select-start :end select-end})
                               :selected selected
@@ -710,6 +716,9 @@
 (defn toggle-snap-to-grid! []
   (swap! state update :snap-to-grid not))
 
+(defn toggle-show-ticks! []
+  (swap! state update :show-ticks not))
+
 ;; >> Context Menu
 
 (def preset-colors
@@ -1025,6 +1034,20 @@
                :stroke "currentColor"
                :stroke-width "2"
                :title "Synced to room"}
+         [:path {:d "M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"}]]]
+       [:label {:class "flex items-center gap-2 cursor-pointer"}
+        [:input {:type "checkbox"
+                 :checked (:show-ticks @state)
+                 :on-change toggle-show-ticks!
+                 :class "w-4 h-4"}]
+        [:span "Axis ticks"]
+        ;; Sync icon
+        [:svg {:class "w-3.5 h-3.5 text-gray-400"
+               :viewBox "0 0 24 24"
+               :fill "none"
+               :stroke "currentColor"
+               :stroke-width "2"
+               :title "Synced to room"}
          [:path {:d "M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"}]]]]]
 
      ;; Divider
@@ -1050,8 +1073,9 @@
 (defn main-canvas []
   [:div {:class "flex-1 bg-gray-100 p-4"}
    [:div {:class "relative w-full h-full bg-white rounded-lg shadow-md overflow-hidden"}
-    [:canvas {:on-render canvas-lifecycle
-              :class "w-full h-full"}]
+    [:div {:class "absolute inset-0 left-5"}
+     [:canvas {:on-render canvas-lifecycle
+               :class "w-full h-full"}]]
     [toolbar]]])
 
 (defn app []
@@ -1090,12 +1114,14 @@
     (let [room-code (:room-code @state)
           events (:events @state)
           points (:points @state)
-          snap-to-grid (:snap-to-grid @state)]
+          snap-to-grid (:snap-to-grid @state)
+          show-ticks (:show-ticks @state)]
       (ably/publish! (room-channel-name room-code)
                      "state-sync"
                      #js {:events events
                           :points points
                           :snapToGrid snap-to-grid
+                          :showTicks show-ticks
                           :from ably/client-id}))))
 
 (defn request-state! []
@@ -1117,13 +1143,16 @@
         "state-sync"
         (let [events (.-events data)
               points (.-points data)
-              snap-to-grid (.-snapToGrid data)]
+              snap-to-grid (.-snapToGrid data)
+              show-ticks (.-showTicks data)]
           (swap! state assoc :syncing true)
           (swap! state assoc :events (vec events))
           (when points
             (swap! state assoc :points (vec points)))
           (when (some? snap-to-grid)
             (swap! state assoc :snap-to-grid snap-to-grid))
+          (when (some? show-ticks)
+            (swap! state assoc :show-ticks show-ticks))
           (swap! state assoc :syncing false))
 
         nil))))
@@ -1155,7 +1184,8 @@
              (when (and (not (:syncing new-state))
                         (or (not= (:events old-state) (:events new-state))
                             (not= (:points old-state) (:points new-state))
-                            (not= (:snap-to-grid old-state) (:snap-to-grid new-state))))
+                            (not= (:snap-to-grid old-state) (:snap-to-grid new-state))
+                            (not= (:show-ticks old-state) (:show-ticks new-state))))
                (broadcast-state!))))
 
 ;; >> Init
