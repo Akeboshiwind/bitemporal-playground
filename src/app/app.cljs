@@ -9,6 +9,7 @@
 (def ABLY_API_KEY "Vr1zhQ.IsKO2g:nY_BkeBtmxQxs0W_MYZNkx-34cZBzzNLOrrAARrygfQ")
 (def GLOBAL_CHANNEL "global")
 (def STORAGE_KEY "bitemporal-visualizer")
+(def SAVED_STATES_KEY "bitemporal-saved-states")
 
 ;; >> Room Code Generation
 
@@ -47,20 +48,33 @@
      :points (or (:points stored) [])
      :show-grid (get stored :show-grid (:show-grid default-settings))}))
 
+;; >> Saved States Storage
+
+(defn save-saved-states! [saved-states]
+  (js/localStorage.setItem SAVED_STATES_KEY (js/JSON.stringify saved-states)))
+
+(defn load-saved-states []
+  (when-let [stored (js/localStorage.getItem SAVED_STATES_KEY)]
+    (js/JSON.parse stored)))
+
 ;; >> State
 
 (def initial-persisted (get-persisted-state))
+(def initial-saved-states (or (load-saved-states) []))
 
 (def state (atom {:events (:events initial-persisted)
                   :points (:points initial-persisted)
-                  :canvas-ref nil
                   :show-grid (:show-grid initial-persisted)
                   :current-tool :select      ; :select, :rectangle, or :point
                   :auto-select true          ; switch to select after drawing
                   :room-code (generate-room-code)
                   :room-count 0              ; users in current room
                   :global-count 0            ; total users online
-                  :syncing false}))          ; true when receiving remote state
+                  :syncing false             ; true when receiving remote state
+                  :saved-states initial-saved-states})) ; list of saved canvas states
+
+;; Canvas ref stored separately to avoid re-render loops
+(def canvas-ref (atom nil))
 
 ;; Save to localStorage when events, points, or settings change
 (add-watch state ::persist
@@ -71,6 +85,12 @@
                (save-to-storage! {:events (:events new-state)
                                   :points (:points new-state)
                                   :show-grid (:show-grid new-state)}))))
+
+;; Save saved-states to localStorage when they change
+(add-watch state ::persist-saved-states
+           (fn [_ _ old-state new-state]
+             (when (not= (:saved-states old-state) (:saved-states new-state))
+               (save-saved-states! (:saved-states new-state)))))
 
 ;; Drag state (separate atom to avoid re-renders during drag)
 (def drag-state (atom {:dragging nil         ; index of event being dragged
@@ -621,6 +641,8 @@
               (.addEventListener js/window "mouseup" mouseup-handler)
               (.addEventListener node "contextmenu" contextmenu-handler)
               (.addEventListener js/window "keydown" keydown-handler)
+              ;; Store canvas reference for thumbnail capture (separate atom to avoid re-render loop)
+              (reset! canvas-ref node)
               (render-canvas! node)
               {:resize resize-handler
                :mousedown mousedown-handler
@@ -629,7 +651,7 @@
                :contextmenu contextmenu-handler
                :keydown keydown-handler})
     "update" (render-canvas! node)
-    "unmount" nil
+    "unmount" (reset! canvas-ref nil)
     nil))
 
 ;; >> Components
@@ -864,35 +886,114 @@
         (.then #(js/console.log "Copied room code:" code))
         (.catch #(js/console.error "Failed to copy:" %)))))
 
+;; >> Saved States
+
+(defn generate-state-id []
+  (str (js/Date.now) "-" (rand-int 10000)))
+
+(defn capture-thumbnail []
+  "Capture canvas as a small thumbnail data URL"
+  (when-let [canvas @canvas-ref]
+    ;; Create a smaller canvas for thumbnail
+    (let [thumb-width 120
+          thumb-height 80
+          thumb-canvas (js/document.createElement "canvas")
+          thumb-ctx (.getContext thumb-canvas "2d")]
+      (set! (.-width thumb-canvas) thumb-width)
+      (set! (.-height thumb-canvas) thumb-height)
+      ;; Draw scaled version of main canvas
+      (.drawImage thumb-ctx canvas 0 0 thumb-width thumb-height)
+      (.toDataURL thumb-canvas "image/png" 0.8))))
+
+(defn save-current-state! []
+  "Save current canvas state with thumbnail"
+  (when-let [thumbnail (capture-thumbnail)]
+    (let [new-state {:id (generate-state-id)
+                     :events (:events @state)
+                     :points (:points @state)
+                     :thumbnail thumbnail
+                     :timestamp (js/Date.now)}]
+      (swap! state update :saved-states conj new-state))))
+
+(defn load-saved-state! [saved-state]
+  "Load a saved state onto the canvas"
+  (swap! state assoc
+         :events (:events saved-state)
+         :points (:points saved-state))
+  ;; Clear selection
+  (swap! drag-state assoc :selected #{} :selected-points #{}))
+
+(defn delete-saved-state! [state-id]
+  "Delete a saved state by its ID"
+  (swap! state update :saved-states
+         (fn [states]
+           (vec (remove #(= (:id %) state-id) states)))))
+
+(defn saved-state-card [saved-state]
+  (let [{:keys [id thumbnail]} saved-state]
+    [:div {:class "relative group cursor-pointer"
+           :on-click #(load-saved-state! saved-state)}
+     ;; Thumbnail
+     [:img {:src thumbnail
+            :class "w-full rounded border border-gray-600 hover:border-blue-400 transition-colors"}]
+     ;; Delete button (top-right corner)
+     [:button {:class "absolute -top-2 -right-2 w-5 h-5 bg-red-500 hover:bg-red-600 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+               :on-click (fn [e]
+                           (.stopPropagation e)
+                           (delete-saved-state! id))}
+      [:svg {:width "10" :height "10" :viewBox "0 0 24 24" :fill "none" :stroke "white" :stroke-width "3"}
+       [:path {:d "M18 6L6 18M6 6l12 12"}]]]]))
+
 (defn side-panel []
-  [:div {:class "w-64 bg-gray-800 text-white p-4 flex flex-col"}
-   [:h1 {:class "text-xl font-bold mb-4"} "Bitemporal Visualizer"]
-   ;; Room section
-   [:div {:class "mb-6 p-3 bg-gray-700 rounded-lg"}
-    [:div {:class "text-xs text-gray-400 mb-1"} "Room"]
-    [:div {:class "flex items-center gap-2"}
-     [:span {:class "font-mono text-lg tracking-wider"} (:room-code @state)]
-     [:button {:class "px-2 py-1 text-xs bg-gray-600 hover:bg-gray-500 rounded cursor-pointer"
-               :title "Copy room code"
-               :on-click copy-room-code!}
-      "Copy"]
-     [:button {:class "px-2 py-1 text-xs bg-blue-500 hover:bg-blue-600 rounded cursor-pointer"
-               :on-click prompt-join-room!}
-      "Join"]]]
-   ;; Options
-   [:div {:class "flex flex-col gap-2"}
-    [:label {:class "flex items-center gap-2 cursor-pointer"}
-     [:input {:type "checkbox"
-              :checked (:show-grid @state)
-              :on-change toggle-grid!
-              :class "w-4 h-4"}]
-     [:span "Grid"]]
-    [:label {:class "flex items-center gap-2 cursor-pointer"}
-     [:input {:type "checkbox"
-              :checked (:auto-select @state)
-              :on-change toggle-auto-select!
-              :class "w-4 h-4"}]
-     [:span "Auto-select after draw"]]]])
+  (let [saved-states (:saved-states @state)]
+    [:div {:class "w-64 bg-gray-800 text-white p-4 flex flex-col h-full"}
+     [:h1 {:class "text-xl font-bold mb-4"} "Bitemporal Visualizer"]
+     ;; Room section
+     [:div {:class "mb-6 p-3 bg-gray-700 rounded-lg"}
+      [:div {:class "text-xs text-gray-400 mb-1"} "Room"]
+      [:div {:class "flex items-center gap-2"}
+       [:span {:class "font-mono text-lg tracking-wider"} (:room-code @state)]
+       [:button {:class "px-2 py-1 text-xs bg-gray-600 hover:bg-gray-500 rounded cursor-pointer"
+                 :title "Copy room code"
+                 :on-click copy-room-code!}
+        "Copy"]
+       [:button {:class "px-2 py-1 text-xs bg-blue-500 hover:bg-blue-600 rounded cursor-pointer"
+                 :on-click prompt-join-room!}
+        "Join"]]]
+     ;; Options
+     [:div {:class "flex flex-col gap-2 mb-4"}
+      [:label {:class "flex items-center gap-2 cursor-pointer"}
+       [:input {:type "checkbox"
+                :checked (:show-grid @state)
+                :on-change toggle-grid!
+                :class "w-4 h-4"}]
+       [:span "Grid"]]
+      [:label {:class "flex items-center gap-2 cursor-pointer"}
+       [:input {:type "checkbox"
+                :checked (:auto-select @state)
+                :on-change toggle-auto-select!
+                :class "w-4 h-4"}]
+       [:span "Auto-select after draw"]]]
+
+     ;; Divider
+     [:div {:class "h-px bg-gray-600 my-4"}]
+
+     ;; Saved States section
+     [:div {:class "flex-1 flex flex-col min-h-0"}
+      [:div {:class "flex items-center justify-between mb-3"}
+       [:span {:class "text-sm font-medium text-gray-300"} "Saved States"]
+       [:button {:class "px-3 py-1 text-xs bg-blue-500 hover:bg-blue-600 rounded cursor-pointer"
+                 :on-click save-current-state!}
+        "Save"]]
+      ;; Scrollable list of saved states
+      [:div {:class "flex-1 overflow-y-auto"}
+       (if (seq saved-states)
+         [:div {:class "grid grid-cols-2 gap-2"}
+          (for [s saved-states]
+            [:div {:key (:id s)}
+             [saved-state-card s]])]
+         [:div {:class "text-xs text-gray-500 text-center py-4"}
+          "No saved states yet"])]]]))
 
 (defn main-canvas []
   [:div {:class "flex-1 bg-gray-100 p-4"}
