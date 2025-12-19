@@ -915,7 +915,7 @@
 
 (defn prompt-join-room! []
   (when-let [code (js/prompt "Enter room code to join:")]
-    (let [code (-> code .trim .toUpperCase)]
+    (let [code (-> code .trim .toUpperCase (subs 0 6))]
       (when (and (seq code) (>= (count code) 4))
         (join-room! code)))))
 
