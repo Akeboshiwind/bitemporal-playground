@@ -31,7 +31,8 @@
    {:_valid_from 0.5 :_valid_to 0.9 :_system_from 0.5 :color [236 72 153]}]) ; pink
 
 (def default-settings
-  {:show-grid false})
+  {:show-grid false
+   :snap-to-grid false})
 
 ;; >> LocalStorage
 
@@ -46,7 +47,8 @@
   (let [stored (load-from-storage)]
     {:events (or (:events stored) default-events)
      :points (or (:points stored) [])
-     :show-grid (get stored :show-grid (:show-grid default-settings))}))
+     :show-grid (get stored :show-grid (:show-grid default-settings))
+     :snap-to-grid (get stored :snap-to-grid (:snap-to-grid default-settings))}))
 
 ;; >> Saved States Storage
 
@@ -65,6 +67,7 @@
 (def state (atom {:events (:events initial-persisted)
                   :points (:points initial-persisted)
                   :show-grid (:show-grid initial-persisted)
+                  :snap-to-grid (:snap-to-grid initial-persisted)
                   :current-tool :select      ; :select, :rectangle, or :point
                   :auto-select true          ; switch to select after drawing
                   :room-code (generate-room-code)
@@ -81,10 +84,12 @@
            (fn [_ _ old-state new-state]
              (when (or (not= (:events old-state) (:events new-state))
                        (not= (:points old-state) (:points new-state))
-                       (not= (:show-grid old-state) (:show-grid new-state)))
+                       (not= (:show-grid old-state) (:show-grid new-state))
+                       (not= (:snap-to-grid old-state) (:snap-to-grid new-state)))
                (save-to-storage! {:events (:events new-state)
                                   :points (:points new-state)
-                                  :show-grid (:show-grid new-state)}))))
+                                  :show-grid (:show-grid new-state)
+                                  :snap-to-grid (:snap-to-grid new-state)}))))
 
 ;; Save saved-states to localStorage when they change
 (add-watch state ::persist-saved-states
@@ -121,6 +126,12 @@
 (def HANDLE_WIDTH 8)    ;; Must match canvas.cljs config
 (def POINT_RADIUS 8)    ;; Must match canvas.cljs config
 (def MIN_DURATION 0.05) ;; Minimum event duration in normalized units
+(def GRID_DIVISIONS 10) ;; Must match canvas.cljs config
+
+(defn snap-to-grid-value [v]
+  "Round a normalized 0..1 value to the nearest grid line (0.1 increments)"
+  (let [step (/ 1.0 GRID_DIVISIONS)]
+    (* step (js/Math.round (/ v step)))))
 
 (defn render-canvas! [canvas-el]
   (let [container (.-parentElement canvas-el)
@@ -416,10 +427,13 @@
       (and dragging-point (= mode :move-point))
       (let [points (vec (:points @state))
             point (nth points dragging-point)
+            snap? (:snap-to-grid @state)
             new-x (- x offset-x)
             new-y (- y offset-y)
             new-x (max 0 (min 1 new-x))
             new-y (max 0 (min 1 new-y))
+            new-x (if snap? (snap-to-grid-value new-x) new-x)
+            new-y (if snap? (snap-to-grid-value new-y) new-y)
             updated-point (assoc point :x new-x :y new-y)
             updated-points (assoc points dragging-point updated-point)]
         (swap! state assoc :points updated-points)
@@ -428,6 +442,7 @@
       ;; Multi-point move mode
       (and dragging-point (= mode :move-points))
       (let [points (vec (:points @state))
+            snap? (:snap-to-grid @state)
             updated-points (reduce
                             (fn [pts idx]
                               (let [point (nth pts idx)
@@ -436,6 +451,8 @@
                                     new-y (- y offset-y)
                                     new-x (max 0 (min 1 new-x))
                                     new-y (max 0 (min 1 new-y))
+                                    new-x (if snap? (snap-to-grid-value new-x) new-x)
+                                    new-y (if snap? (snap-to-grid-value new-y) new-y)
                                     updated-point (assoc point :x new-x :y new-y)]
                                 (assoc pts idx updated-point)))
                             points
@@ -447,7 +464,9 @@
       (and dragging (= mode :resize))
       (let [events (:events @state)
             event (nth events dragging)
+            snap? (:snap-to-grid @state)
             new-valid-to (+ x offset-x)
+            new-valid-to (if snap? (snap-to-grid-value new-valid-to) new-valid-to)
             min-valid-to (+ (:_valid_from event) MIN_DURATION)
             new-valid-to (max min-valid-to (min 1 new-valid-to))
             updated-event (assoc event :_valid_to new-valid-to)
@@ -459,8 +478,10 @@
       (and dragging (= mode :resize-multi))
       (let [{:keys [anchor-point original-span original-positions]} @drag-state
             events (vec (:events @state))
+            snap? (:snap-to-grid @state)
             ;; Calculate new max valid-to based on drag
             new-max-valid-to (+ x offset-x)
+            new-max-valid-to (if snap? (snap-to-grid-value new-max-valid-to) new-max-valid-to)
             new-max-valid-to (max (+ anchor-point MIN_DURATION) (min 1 new-max-valid-to))
             ;; Calculate scale factor
             new-span (- new-max-valid-to anchor-point)
@@ -489,6 +510,7 @@
       ;; Multi-move mode - move all selected events together
       (and dragging (= mode :move-multi))
       (let [events (vec (:events @state))
+            snap? (:snap-to-grid @state)
             updated-events (reduce
                             (fn [evts idx]
                               (let [event (nth evts idx)
@@ -497,6 +519,8 @@
                                     event-width (if open? 0 (- (:_valid_to event) (:_valid_from event)))
                                     new-valid-from (- x offset-x)
                                     new-system-from (+ y offset-y)
+                                    new-valid-from (if snap? (snap-to-grid-value new-valid-from) new-valid-from)
+                                    new-system-from (if snap? (snap-to-grid-value new-system-from) new-system-from)
                                     new-valid-from (max 0 (min (- 1 event-width) new-valid-from))
                                     new-system-from (max 0 (min 1 new-system-from))
                                     updated-event (if open?
@@ -517,10 +541,13 @@
       (and dragging (= mode :move))
       (let [events (:events @state)
             event (nth events dragging)
+            snap? (:snap-to-grid @state)
             open? (nil? (:_valid_to event))
             event-width (if open? 0 (- (:_valid_to event) (:_valid_from event)))
             new-valid-from (- x offset-x)
             new-system-from (+ y offset-y)
+            new-valid-from (if snap? (snap-to-grid-value new-valid-from) new-valid-from)
+            new-system-from (if snap? (snap-to-grid-value new-system-from) new-system-from)
             new-valid-from (max 0 (min (- 1 event-width) new-valid-from))
             new-system-from (max 0 (min 1 new-system-from))
             updated-event (if open?
@@ -679,6 +706,9 @@
 
 (defn toggle-grid! []
   (swap! state update :show-grid not))
+
+(defn toggle-snap-to-grid! []
+  (swap! state update :snap-to-grid not))
 
 ;; >> Context Menu
 
@@ -968,6 +998,12 @@
                 :on-change toggle-grid!
                 :class "w-4 h-4"}]
        [:span "Grid"]]
+      [:label {:class "flex items-center gap-2 cursor-pointer"}
+       [:input {:type "checkbox"
+                :checked (:snap-to-grid @state)
+                :on-change toggle-snap-to-grid!
+                :class "w-4 h-4"}]
+       [:span "Snap to grid"]]
       [:label {:class "flex items-center gap-2 cursor-pointer"}
        [:input {:type "checkbox"
                 :checked (:auto-select @state)
