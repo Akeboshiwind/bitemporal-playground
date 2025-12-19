@@ -77,7 +77,9 @@
                   :room-count 0              ; users in current room
                   :global-count 0            ; total users online
                   :syncing false             ; true when receiving remote state
-                  :saved-states initial-saved-states})) ; list of saved canvas states
+                  :saved-states initial-saved-states ; list of saved canvas states
+                  :dml-start-date "2024-01-01"
+                  :dml-end-date "2025-01-01"}))
 
 ;; Canvas ref stored separately to avoid re-render loops
 (def canvas-ref (atom nil))
@@ -925,6 +927,59 @@
         (.then #(js/console.log "Copied room code:" code))
         (.catch #(js/console.error "Failed to copy:" %)))))
 
+;; >> DML Export
+
+(defn parse-date [date-str]
+  "Parse a date string (YYYY-MM-DD) to a js/Date at midnight UTC"
+  (let [[year month day] (map js/parseInt (.split date-str "-"))]
+    (js/Date. (js/Date.UTC year (dec month) day))))
+
+(defn format-date-for-dml [date]
+  "Format a js/Date as YYYY-MM-DD for XTDB DML"
+  (let [year (.getUTCFullYear date)
+        month (inc (.getUTCMonth date))
+        day (.getUTCDate date)
+        pad #(.padStart (str %) 2 "0")]
+    (str year "-" (pad month) "-" (pad day))))
+
+(defn normalized-to-date [normalized start-date end-date]
+  "Convert a normalized 0-1 value to a date within the range"
+  (let [start-ms (.getTime start-date)
+        end-ms (.getTime end-date)
+        range-ms (- end-ms start-ms)
+        target-ms (+ start-ms (* range-ms normalized))]
+    (js/Date. target-ms)))
+
+(defn event-to-dml [event start-date end-date]
+  "Convert a single event to a DML INSERT statement with system time transaction"
+  (let [{:keys [_valid_from _valid_to _system_from color]} event
+        valid-from-date (format-date-for-dml (normalized-to-date _valid_from start-date end-date))
+        system-from-date (format-date-for-dml (normalized-to-date _system_from start-date end-date))
+        open? (nil? _valid_to)
+        color-str (str "[" (first color) ", " (second color) ", " (nth color 2) "]")]
+    (str "BEGIN READ WRITE WITH (SYSTEM_TIME = DATE '" system-from-date "');\n"
+         "INSERT INTO docs RECORDS {_id: 1, _valid_from: DATE '" valid-from-date "', "
+         (when-not open?
+           (let [valid-to-date (format-date-for-dml (normalized-to-date _valid_to start-date end-date))]
+             (str "_valid_to: DATE '" valid-to-date "', ")))
+         "color: " color-str "};\n"
+         "COMMIT;")))
+
+(defn generate-dml []
+  "Generate DML for all events on the canvas"
+  (let [events (:events @state)
+        start-date (parse-date (:dml-start-date @state))
+        end-date (parse-date (:dml-end-date @state))
+        dml-statements (map #(event-to-dml % start-date end-date) events)]
+    (.join (to-array dml-statements) "\n\n")))
+
+(defn copy-dml! []
+  "Copy generated DML to clipboard"
+  (let [dml (generate-dml)]
+    (-> (js/navigator.clipboard.writeText dml)
+        (.then #(js/console.log "Copied DML to clipboard"))
+        (.catch #(js/console.error "Failed to copy DML:" %)))))
+
 ;; >> Saved States
 
 (defn generate-state-id []
@@ -1049,6 +1104,29 @@
                :stroke-width "2"
                :title "Synced to room"}
          [:path {:d "M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"}]]]]]
+
+     ;; Divider
+     [:div {:class "h-px bg-gray-600 my-4"}]
+
+     ;; DML Export section
+     [:div {:class "mb-4"}
+      [:div {:class "text-xs text-gray-400 mb-2"} "DML Export"]
+      [:div {:class "flex flex-col gap-2"}
+       [:div {:class "flex items-center gap-2"}
+        [:label {:class "text-sm text-gray-300 w-12"} "Start"]
+        [:input {:type "date"
+                 :value (:dml-start-date @state)
+                 :on-change #(swap! state assoc :dml-start-date (.-value (.-target %)))
+                 :class "flex-1 px-2 py-1 text-sm bg-gray-700 border border-gray-600 rounded text-white"}]]
+       [:div {:class "flex items-center gap-2"}
+        [:label {:class "text-sm text-gray-300 w-12"} "End"]
+        [:input {:type "date"
+                 :value (:dml-end-date @state)
+                 :on-change #(swap! state assoc :dml-end-date (.-value (.-target %)))
+                 :class "flex-1 px-2 py-1 text-sm bg-gray-700 border border-gray-600 rounded text-white"}]]
+       [:button {:class "w-full px-3 py-1.5 text-sm bg-blue-500 hover:bg-blue-600 rounded cursor-pointer mt-1"
+                 :on-click copy-dml!}
+        "Copy DML"]]]
 
      ;; Divider
      [:div {:class "h-px bg-gray-600 my-4"}]
