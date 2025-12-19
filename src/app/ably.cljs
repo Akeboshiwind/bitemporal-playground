@@ -1,15 +1,9 @@
 (ns app.ably
   (:require ["ably" :as Ably]))
 
-;; >> Client ID (stable per device)
+;; >> Client ID (unique per tab/session)
 
-(defn get-client-id []
-  (or (js/localStorage.getItem "client-id")
-      (let [id (str (random-uuid))]
-        (js/localStorage.setItem "client-id" id)
-        id)))
-
-(def client-id (get-client-id))
+(def client-id (str (random-uuid)))
 
 ;; >> Ably Client Setup
 
