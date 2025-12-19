@@ -28,7 +28,9 @@ jobs:
         run: bun install
 
       - name: Build
-        run: bb build
+        run: |
+          bun squint compile
+          bun run build.js --base-path /tools/bitemporal
 
       - name: Deploy to dist branch
         uses: peaceiris/actions-gh-pages@v4
